@@ -25,6 +25,21 @@ struct RecordCommand: AsyncParsableCommand {
     @Option(help: "最长录制秒数；0 表示不限，直到 Ctrl-C。")
     var duration: Int = 0
 
+    func validate() throws {
+        guard !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ValidationError("--app 不能为空。")
+        }
+        guard (1...48_000).contains(sampleRate) else {
+            throw ValidationError("--sample-rate 必须在 1...48000 Hz 范围内（当前 \(sampleRate)）。")
+        }
+        guard (1...2).contains(channels) else {
+            throw ValidationError("--channels 只能是 1 或 2（当前 \(channels)）。")
+        }
+        guard duration >= 0 else {
+            throw ValidationError("--duration 不能为负数（当前 \(duration)）。")
+        }
+    }
+
     func run() async throws {
         let targetApp = try await ContentResolver.findApp(matching: app)
         let filter = try await ContentResolver.filter(for: targetApp)
@@ -57,7 +72,7 @@ struct RecordCommand: AsyncParsableCommand {
         }
 
         try await engine.start(filter: filter)
-        await waitForStop(duration: duration)
+        await waitForStop(duration: duration, engine: engine)
         try await engine.stop()
 
         let seconds = engine.recordedSeconds
@@ -73,15 +88,19 @@ struct RecordCommand: AsyncParsableCommand {
 
     /// 等待停止条件：Ctrl-C 或达到时长上限，谁先满足谁结束。
     ///
-    /// 用 `TaskGroup` 让两个条件竞速：任一子任务先返回，就取消其余（`InterruptSignal`
+    /// 用 `TaskGroup` 让三个条件竞速：任一子任务先返回，就取消其余（`InterruptSignal`
     /// 的 `onTermination` 会随之关闭信号源），因此无需手动处理二者的竞争。
-    private func waitForStop(duration: Int) async {
-        enum StopReason { case interrupt, timeout }
+    private func waitForStop(duration: Int, engine: AudioCaptureEngine) async {
+        enum StopReason { case interrupt, timeout, failure }
 
         let reason = await withTaskGroup(of: StopReason.self) { group in
             group.addTask {
                 await InterruptSignal.wait()
                 return .interrupt
+            }
+            group.addTask {
+                await engine.waitForFailure()
+                return .failure
             }
             if duration > 0 {
                 group.addTask {
@@ -94,8 +113,13 @@ struct RecordCommand: AsyncParsableCommand {
             return first
         }
 
-        if reason == .interrupt {
+        switch reason {
+        case .interrupt:
             print("\n收到停止信号，正在保存…")
+        case .failure:
+            print("\n捕获意外停止，正在保存已录内容…")
+        case .timeout:
+            break
         }
     }
 

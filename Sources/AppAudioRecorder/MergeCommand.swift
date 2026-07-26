@@ -20,8 +20,8 @@ struct MergeCommand: AsyncParsableCommand {
     var gain: Float = 0.707
 
     func validate() throws {
-        guard gain > 0 else {
-            throw ValidationError("--gain 必须大于 0（当前 \(gain)）。")
+        guard gain.isFinite, gain > 0 else {
+            throw ValidationError("--gain 必须是大于 0 的有限数值（当前 \(gain)）。")
         }
     }
 
@@ -33,6 +33,10 @@ struct MergeCommand: AsyncParsableCommand {
         }
 
         let outputURL = resolveOutputURL(appURL: appURL)
+        let standardizedOutput = outputURL.standardizedFileURL
+        if [appURL, micURL].contains(where: { $0.standardizedFileURL == standardizedOutput }) {
+            throw RecorderError.outputConflictsWithInput(path: outputURL.path)
+        }
         guard FileManager.default.isWritableFile(atPath: outputURL.deletingLastPathComponent().path) else {
             throw RecorderError.outputNotWritable(path: outputURL.path)
         }

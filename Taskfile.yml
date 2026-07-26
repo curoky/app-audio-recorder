@@ -27,6 +27,11 @@ tasks:
     cmds:
       - swift build {{.SANDBOX_FLAG}} -c release
 
+  test:
+    desc: 运行 SwiftPM 测试
+    cmds:
+      - swift test {{.SANDBOX_FLAG}}
+
   run:
     desc: 运行工具，额外参数用 -- 透传（如 task run -- list）
     cmds:

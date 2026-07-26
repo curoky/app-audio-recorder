@@ -32,7 +32,10 @@ extension AVAudioPCMBuffer {
         if format.isEqual(target) { return self }
 
         let active: AVAudioConverter
-        if let existing = converter, existing.inputFormat.isEqual(format) {
+        if let existing = converter,
+           existing.inputFormat.isEqual(format),
+           existing.outputFormat.isEqual(target)
+        {
             active = existing
         } else {
             guard let created = AVAudioConverter(from: format, to: target) else {
@@ -42,11 +45,34 @@ extension AVAudioPCMBuffer {
             active = created
         }
 
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: frameLength) else {
+        let rateRatio = target.sampleRate / format.sampleRate
+        let primeFrames = active.primeInfo.leadingFrames + active.primeInfo.trailingFrames
+        let outputCapacity =
+            AVAudioFrameCount(ceil(Double(frameLength) * rateRatio)) + primeFrames + 1
+        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: outputCapacity) else {
             throw .audioConversionFailed
         }
         do {
-            try active.convert(to: output, from: self)
+            if format.sampleRate == target.sampleRate {
+                try active.convert(to: output, from: self)
+            } else {
+                active.reset()
+                var providedInput = false
+                var conversionError: NSError?
+                let status = active.convert(to: output, error: &conversionError) {
+                    _, inputStatus in
+                    guard !providedInput else {
+                        inputStatus.pointee = .endOfStream
+                        return nil
+                    }
+                    providedInput = true
+                    inputStatus.pointee = .haveData
+                    return self
+                }
+                if status == .error {
+                    throw conversionError ?? RecorderError.audioConversionFailed
+                }
+            }
         } catch {
             throw .audioConversionFailed
         }

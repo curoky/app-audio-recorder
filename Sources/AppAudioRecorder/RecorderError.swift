@@ -7,10 +7,12 @@ enum RecorderError: LocalizedError {
     case microphonePermissionDenied
     case appNotFound(query: String)
     case noAppsAvailable
+    case audioCaptureFailed
     case audioConversionFailed
     case audioMergeFailed
     case inputNotReadable(path: String)
     case outputNotWritable(path: String)
+    case outputConflictsWithInput(path: String)
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +31,8 @@ enum RecorderError: LocalizedError {
             "未找到匹配「\(query)」且正在运行、可捕获音频的 app。可先运行 `list` 查看可用 app。"
         case .noAppsAvailable:
             "当前没有可捕获音频的运行中 app。"
+        case .audioCaptureFailed:
+            "音频捕获意外停止，已保存停止前成功写入的内容。"
         case .audioConversionFailed:
             "音频格式转换失败。"
         case .audioMergeFailed:
@@ -37,6 +41,8 @@ enum RecorderError: LocalizedError {
             "输入文件不存在或不可读：\(path)"
         case let .outputNotWritable(path):
             "输出路径不可写：\(path)"
+        case let .outputConflictsWithInput(path):
+            "输出路径不能与任一路输入文件相同：\(path)"
         }
     }
 }

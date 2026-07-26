@@ -23,5 +23,9 @@ let package = Package(
                 .enableUpcomingFeature("InferIsolatedConformances"),
             ]
         ),
+        .testTarget(
+            name: "AppAudioRecorderTests",
+            dependencies: ["AppAudioRecorder"]
+        ),
     ]
 )

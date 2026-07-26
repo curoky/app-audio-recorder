@@ -12,9 +12,14 @@ import Foundation
 ///
 /// CPU 密集，调用方应放到后台执行（`@concurrent`），不占用协作线程池。
 enum AudioMerger {
+    private static let chunkFrames: AVAudioFrameCount = 4_096
+
     /// 把 `appURL` 与 `micURL` 混音写入 `outputURL`（16-bit PCM WAV）。
     /// - Parameter gain: 两路相加前统一乘的线性增益，须 > 0。
     static func merge(appURL: URL, micURL: URL, outputURL: URL, gain: Float) throws(RecorderError) {
+        guard gain.isFinite, gain > 0 else {
+            throw .audioMergeFailed
+        }
         do {
             try mergeThrowing(appURL: appURL, micURL: micURL, outputURL: outputURL, gain: gain)
         } catch let error as RecorderError {
@@ -40,49 +45,150 @@ enum AudioMerger {
             throw RecorderError.audioMergeFailed
         }
 
-        let app = try readAll(appFile, as: mixFormat)
-        let mic = try readAll(micFile, as: mixFormat)
-
-        let frames = max(app.frameLength, mic.frameLength)
-        guard frames > 0,
-              let mixed = AVAudioPCMBuffer(pcmFormat: mixFormat, frameCapacity: frames)
-        else { throw RecorderError.audioMergeFailed }
-        mixed.frameLength = frames
-
-        guard let appData = app.floatChannelData,
-              let micData = mic.floatChannelData,
-              let outData = mixed.floatChannelData
+        let appReader = try ConvertedAudioReader(file: appFile, targetFormat: mixFormat)
+        let micReader = try ConvertedAudioReader(file: micFile, targetFormat: mixFormat)
+        guard let mixed = AVAudioPCMBuffer(pcmFormat: mixFormat, frameCapacity: chunkFrames)
         else { throw RecorderError.audioMergeFailed }
 
+        let outputFile = try AudioFormatSupport.makePCM16File(
+            at: outputURL,
+            sampleRate: sampleRate,
+            channels: channels
+        )
         let channelCount = Int(channels)
-        for ch in 0..<channelCount {
-            let appPtr = appData[ch]
-            let micPtr = micData[ch]
-            let outPtr = outData[ch]
-            let appCount = Int(app.frameLength)
-            let micCount = Int(mic.frameLength)
-            for frame in 0..<Int(frames) {
-                let a = frame < appCount ? appPtr[frame] : 0
-                let m = frame < micCount ? micPtr[frame] : 0
-                // 先按 gain 缩放两路之和，再硬限幅：gain<=0.5 时数学上必不削波，
-                // 更高增益（含 >1）靠 min/max 兜底，防止溢出 [-1, 1] 造成失真。
-                outPtr[frame] = min(1, max(-1, gain * (a + m)))
+        while true {
+            let app = try appReader.read(maxFrames: chunkFrames)
+            let mic = try micReader.read(maxFrames: chunkFrames)
+            let frames = max(app.frameLength, mic.frameLength)
+            guard frames > 0 else { break }
+            mixed.frameLength = frames
+
+            guard let appData = app.floatChannelData,
+                  let micData = mic.floatChannelData,
+                  let outData = mixed.floatChannelData
+            else { throw RecorderError.audioMergeFailed }
+
+            for ch in 0..<channelCount {
+                let appPtr = appData[ch]
+                let micPtr = micData[ch]
+                let outPtr = outData[ch]
+                let appCount = Int(app.frameLength)
+                let micCount = Int(mic.frameLength)
+                for frame in 0..<Int(frames) {
+                    let a = frame < appCount ? appPtr[frame] : 0
+                    let m = frame < micCount ? micPtr[frame] : 0
+                    outPtr[frame] = min(1, max(-1, gain * (a + m)))
+                }
+            }
+            try outputFile.write(from: mixed)
+        }
+    }
+
+    /// 按目标格式分块读取，转换器跨块复用以保持重采样状态连续。
+    private final class ConvertedAudioReader {
+        private let file: AVAudioFile
+        private let converter: AVAudioConverter?
+        private let sourceBuffer: AVAudioPCMBuffer?
+        private let outputBuffer: AVAudioPCMBuffer
+        private var inputEnded = false
+        private var conversionEnded = false
+
+        init(file: AVAudioFile, targetFormat: AVAudioFormat) throws {
+            guard let outputBuffer = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: AudioMerger.chunkFrames
+            ) else {
+                throw RecorderError.audioConversionFailed
+            }
+            self.file = file
+            self.outputBuffer = outputBuffer
+            if file.processingFormat.isEqual(targetFormat) {
+                self.converter = nil
+                self.sourceBuffer = nil
+            } else {
+                guard let converter = AVAudioConverter(
+                    from: file.processingFormat,
+                    to: targetFormat
+                ), let sourceBuffer = AVAudioPCMBuffer(
+                    pcmFormat: file.processingFormat,
+                    frameCapacity: AudioMerger.chunkFrames
+                ) else {
+                    throw RecorderError.audioConversionFailed
+                }
+                self.converter = converter
+                self.sourceBuffer = sourceBuffer
             }
         }
 
-        let file = try AudioFormatSupport.makePCM16File(at: outputURL, sampleRate: sampleRate, channels: channels)
-        try file.write(from: mixed)
-    }
+        func read(maxFrames: AVAudioFrameCount) throws -> AVAudioPCMBuffer {
+            let output = outputBuffer
+            output.frameLength = 0
+            guard !conversionEnded else { return output }
 
-    /// 一次性把整个文件读入内存并转换成指定格式的缓冲区。
-    private static func readAll(_ file: AVAudioFile, as format: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let frameCount = AVAudioFrameCount(file.length)
-        guard frameCount > 0,
-              let source = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount)
-        else { throw RecorderError.audioMergeFailed }
-        try file.read(into: source)
+            guard let converter, let sourceBuffer else {
+                let remainingFrames = file.length - file.framePosition
+                guard remainingFrames > 0 else {
+                    conversionEnded = true
+                    return output
+                }
+                try file.read(
+                    into: output,
+                    frameCount: min(maxFrames, AVAudioFrameCount(remainingFrames))
+                )
+                return output
+            }
 
-        var converter: AVAudioConverter?
-        return try source.converted(to: format, reusing: &converter)
+            var inputError: Error?
+            var conversionError: NSError?
+            let status = converter.convert(to: output, error: &conversionError) {
+                [self] requestedFrames, inputStatus in
+                if inputEnded {
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+                guard requestedFrames > 0 else {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                let remainingFrames = file.length - file.framePosition
+                guard remainingFrames > 0 else {
+                    inputEnded = true
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+
+                do {
+                    sourceBuffer.frameLength = 0
+                    try file.read(
+                        into: sourceBuffer,
+                        frameCount: min(
+                            requestedFrames,
+                            sourceBuffer.frameCapacity,
+                            AVAudioFrameCount(remainingFrames)
+                        )
+                    )
+                } catch {
+                    inputError = error
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+
+                guard sourceBuffer.frameLength > 0 else {
+                    inputEnded = true
+                    inputStatus.pointee = .endOfStream
+                    return nil
+                }
+                inputStatus.pointee = .haveData
+                return sourceBuffer
+            }
+
+            if inputError != nil || status == .error {
+                throw conversionError ?? RecorderError.audioConversionFailed
+            }
+            if status == .endOfStream || (inputEnded && output.frameLength == 0) {
+                conversionEnded = true
+            }
+            return output
+        }
     }
 }
