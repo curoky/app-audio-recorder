@@ -124,7 +124,7 @@ struct RecordCommand: AsyncParsableCommand {
     /// 基础路径（不含扩展名）：用户指定则去掉其 `.wav` 扩展名，否则用当前目录带时间戳的名字。
     private func baseURL(appName: String) -> URL {
         if let output {
-            let expanded = URL(fileURLWithPath: (output as NSString).expandingTildeInPath)
+            let expanded = URL(expandingPath: output)
             return expanded.pathExtension.lowercased() == "wav"
                 ? expanded.deletingPathExtension()
                 : expanded

@@ -70,7 +70,8 @@ enum AudioMerger {
             }
         }
 
-        try writePCM16(mixed, to: outputURL, sampleRate: sampleRate, channels: channels)
+        let file = try AudioFormatSupport.makePCM16File(at: outputURL, sampleRate: sampleRate, channels: channels)
+        try file.write(from: mixed)
     }
 
     /// 一次性把整个文件读入内存并转换成指定格式的缓冲区。
@@ -81,31 +82,7 @@ enum AudioMerger {
         else { throw RecorderError.audioMergeFailed }
         try file.read(into: source)
 
-        if file.processingFormat.isEqual(format) {
-            return source
-        }
-        guard let converter = AVAudioConverter(from: file.processingFormat, to: format),
-              let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
-        else { throw RecorderError.audioMergeFailed }
-        try converter.convert(to: output, from: source)
-        return output
-    }
-
-    private static func writePCM16(
-        _ buffer: AVAudioPCMBuffer,
-        to outputURL: URL,
-        sampleRate: Double,
-        channels: AVAudioChannelCount
-    ) throws {
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: sampleRate,
-            AVNumberOfChannelsKey: Int(channels),
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let file = try AVAudioFile(forWriting: outputURL, settings: settings)
-        try file.write(from: buffer)
+        var converter: AVAudioConverter?
+        return try source.converted(to: format, reusing: &converter)
     }
 }

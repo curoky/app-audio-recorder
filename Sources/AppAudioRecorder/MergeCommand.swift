@@ -26,8 +26,8 @@ struct MergeCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let appURL = expand(appInput)
-        let micURL = expand(micInput)
+        let appURL = URL(expandingPath: appInput)
+        let micURL = URL(expandingPath: micInput)
         for url in [appURL, micURL] where !FileManager.default.isReadableFile(atPath: url.path) {
             throw RecorderError.inputNotReadable(path: url.path)
         }
@@ -52,14 +52,10 @@ struct MergeCommand: AsyncParsableCommand {
         try AudioMerger.merge(appURL: appURL, micURL: micURL, outputURL: mergedURL, gain: gain)
     }
 
-    private func expand(_ path: String) -> URL {
-        URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-    }
-
     /// 输出路径：用户指定则用之，否则在第一路输入同目录生成 `<去掉-app 后缀的基名>-merged.wav`。
     private func resolveOutputURL(appURL: URL) -> URL {
         if let output {
-            return expand(output)
+            return URL(expandingPath: output)
         }
         // record 产出的 app 文件名形如 `<base>-app.wav`，去掉 `-app` 得到干净基名。
         let stem = appURL.deletingPathExtension().lastPathComponent
