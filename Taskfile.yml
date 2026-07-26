@@ -42,6 +42,11 @@ tasks:
     cmds:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} record {{.CLI_ARGS}}
 
+  merge:
+    desc: 把两路 WAV 混音成一个文件；参数用 -- 透传（如 task merge -- a-app.wav a-mic.wav）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} merge {{.CLI_ARGS}}
+
   install:
     desc: release 构建并安装到 {{.INSTALL_DIR}}
     deps: [build:release]

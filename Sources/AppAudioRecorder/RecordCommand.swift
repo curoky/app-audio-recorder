@@ -46,7 +46,6 @@ struct RecordCommand: AsyncParsableCommand {
         if mic {
             print("输出文件 : \(paths.app.path)")
             print("           \(paths.mic!.path)")
-            print("           \(paths.merged!.path)（合并）")
         } else {
             print("输出文件 : \(paths.app.path)")
         }
@@ -62,22 +61,14 @@ struct RecordCommand: AsyncParsableCommand {
         try await engine.stop()
 
         let seconds = engine.recordedSeconds
-        if mic, let micURL = paths.mic, let mergedURL = paths.merged {
-            print("正在合并音轨…")
-            try await mergeTracks(appURL: paths.app, micURL: micURL, mergedURL: mergedURL)
+        if mic, let micURL = paths.mic {
             print(String(format: "\n已保存（时长约 %.1f 秒）：", seconds))
-            print("  app    : \(paths.app.path)")
-            print("  mic    : \(micURL.path)")
-            print("  merged : \(mergedURL.path)")
+            print("  app : \(paths.app.path)")
+            print("  mic : \(micURL.path)")
+            print("如需合并：app-audio-recorder merge \"\(paths.app.path)\" \"\(micURL.path)\"")
         } else {
             print(String(format: "\n已保存：%@（时长约 %.1f 秒）", paths.app.path, seconds))
         }
-    }
-
-    /// 离线合并放到并发线程池，避免 CPU 密集混音占用协作线程池。
-    @concurrent
-    private func mergeTracks(appURL: URL, micURL: URL, mergedURL: URL) async throws {
-        try AudioMerger.merge(appURL: appURL, micURL: micURL, outputURL: mergedURL)
     }
 
     /// 等待停止条件：Ctrl-C 或达到时长上限，谁先满足谁结束。
@@ -108,15 +99,14 @@ struct RecordCommand: AsyncParsableCommand {
         }
     }
 
-    /// 三个输出文件的路径。`mic`/`merged` 仅在录麦克风时使用。
+    /// 输出文件的路径。`mic` 仅在录麦克风时使用。
     private struct OutputPaths {
         let app: URL
         let mic: URL?
-        let merged: URL?
     }
 
     /// 从基础路径派生输出路径。
-    /// - 录麦克风：`<base>-app.wav` / `<base>-mic.wav` / `<base>-merged.wav`。
+    /// - 录麦克风：`<base>-app.wav` / `<base>-mic.wav` 两路独立文件（合并交给 `merge` 子命令）。
     /// - 不录麦克风：`<base>.wav` 单文件。
     private func outputPaths(appName: String) throws -> OutputPaths {
         let base = baseURL(appName: appName)
@@ -126,13 +116,9 @@ struct RecordCommand: AsyncParsableCommand {
         }
 
         guard mic else {
-            return OutputPaths(app: base.appendingPathExtension("wav"), mic: nil, merged: nil)
+            return OutputPaths(app: base.appendingPathExtension("wav"), mic: nil)
         }
-        return OutputPaths(
-            app: suffixed(base, "app"),
-            mic: suffixed(base, "mic"),
-            merged: suffixed(base, "merged")
-        )
+        return OutputPaths(app: suffixed(base, "app"), mic: suffixed(base, "mic"))
     }
 
     /// 基础路径（不含扩展名）：用户指定则去掉其 `.wav` 扩展名，否则用当前目录带时间戳的名字。

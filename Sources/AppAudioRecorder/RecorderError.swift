@@ -9,6 +9,7 @@ enum RecorderError: LocalizedError {
     case noAppsAvailable
     case audioConversionFailed
     case audioMergeFailed
+    case inputNotReadable(path: String)
     case outputNotWritable(path: String)
 
     var errorDescription: String? {
@@ -32,6 +33,8 @@ enum RecorderError: LocalizedError {
             "音频格式转换失败。"
         case .audioMergeFailed:
             "合并 app 音频与麦克风音轨失败。"
+        case let .inputNotReadable(path):
+            "输入文件不存在或不可读：\(path)"
         case let .outputNotWritable(path):
             "输出路径不可写：\(path)"
         }

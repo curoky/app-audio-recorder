@@ -15,9 +15,10 @@ struct AppAudioRecorder: AsyncParsableCommand {
           app-audio-recorder list                 # 列出可录音的 app
           app-audio-recorder record               # 默认录制微信
           app-audio-recorder record --app WeChat  # 按名称/ bundleId 录制
+          app-audio-recorder merge a-app.wav a-mic.wav  # 把两路混音成一个文件
         """,
         version: "0.1.0",
-        subcommands: [ListCommand.self, RecordCommand.self],
+        subcommands: [ListCommand.self, RecordCommand.self, MergeCommand.self],
         defaultSubcommand: RecordCommand.self
     )
 }
