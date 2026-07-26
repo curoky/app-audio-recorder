@@ -4,9 +4,9 @@
 
 ## 项目概述
 
-macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出，不含麦克风）。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
+macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，并把两路分别落盘、外加一个合并文件。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
 
-- 语言/工具链：Swift 6（`swift-tools-version: 6.0`），平台 `macOS 14 (Sonoma)+`（开发验证于 macOS 26 / Swift 6.2 / Xcode 26）。
+- 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
 - 唯一依赖：`swift-argument-parser`（构建 CLI）。
 - 产物：单可执行文件 `app-audio-recorder`。
 
@@ -66,23 +66,24 @@ CLI 入口聚合两个子命令，捕获逻辑与内容解析分层：
 | [ListCommand.swift](Sources/AppAudioRecorder/ListCommand.swift) | `list`：打印可捕获音频的运行中 app |
 | [RecordCommand.swift](Sources/AppAudioRecorder/RecordCommand.swift) | `record`：参数解析、启动引擎、Ctrl-C/定时停止 |
 | [ContentResolver.swift](Sources/AppAudioRecorder/ContentResolver.swift) | 枚举 app、按名称/bundleId 匹配、构建只含目标 app 的过滤器 |
-| [AudioCaptureEngine.swift](Sources/AppAudioRecorder/AudioCaptureEngine.swift) | `SCStream` 音频捕获、`CMSampleBuffer` → PCM → WAV 写盘 |
-| [RecorderError.swift](Sources/AppAudioRecorder/RecorderError.swift) | 可预期错误枚举，`description` 为面向用户的中文提示 |
-| [ExitWithMessage.swift](Sources/AppAudioRecorder/ExitWithMessage.swift) | 让子命令以友好信息非零退出，避免打印 Swift 堆栈 |
+| [AudioCaptureEngine.swift](Sources/AppAudioRecorder/AudioCaptureEngine.swift) | `SCStream` 捕获生命周期与样本转发（不含写盘逻辑） |
+| [WAVWriter.swift](Sources/AppAudioRecorder/WAVWriter.swift) | `CMSampleBuffer` → PCM → 16-bit WAV 写盘与格式转换 |
+| [InterruptSignal.swift](Sources/AppAudioRecorder/InterruptSignal.swift) | 把 SIGINT（Ctrl-C）封装成可 await 的信号 |
+| [RecorderError.swift](Sources/AppAudioRecorder/RecorderError.swift) | 可预期错误枚举，遵从 `LocalizedError`，`errorDescription` 为面向用户的中文提示 |
 
 ### 捕获链路
 
-1. `SCShareableContent` 枚举显示器与运行中 app（见 [ContentResolver.shareableContent](Sources/AppAudioRecorder/ContentResolver.swift#L10-L21)）。
+1. `SCShareableContent` 枚举显示器与运行中 app（见 [ContentResolver.shareableContent](Sources/AppAudioRecorder/ContentResolver.swift#L11-L24)）。
 2. `SCContentFilter(display:including:[目标 app])` 构建**只含目标 app** 的过滤器，从而只捕获它的音频。
 3. `SCStream` 配置 `capturesAudio = true`、`excludesCurrentProcessAudio = true`，视频尺寸压到 2×2 以省资源。
-4. 音频 `CMSampleBuffer` 经 `AVAudioConverter` 转换后由 `AVAudioFile` 写成 16-bit 整型 PCM WAV。
+4. 引擎在采样队列上把 `CMSampleBuffer` 转交 [WAVWriter](Sources/AppAudioRecorder/WAVWriter.swift)，经 `AVAudioConverter` 转换后由 `AVAudioFile` 写成 16-bit 整型 PCM WAV。
 
 ## 关键约束（改代码前务必注意）
 
-- **线程模型**：[AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift#L12) 的所有可变状态（`audioFile`/`converter`/`totalFrames`/`writeError`）只能在串行队列 `sampleQueue` 上访问，这是它标 `@unchecked Sendable` 安全的前提。**新增可变状态必须走同一队列**，否则破坏线程安全。
-- **文件关闭时机**：`stop()` 在 `sampleQueue` 上同步置 `audioFile = nil`，以保证 WAV 头长度被正确写回；不要改成异步或提前释放。
-- **停止竞争**：Ctrl-C 与定时超时可能同时触发，用 [ResumeGuard](Sources/AppAudioRecorder/RecordCommand.swift#L109) 保证 continuation 只 resume 一次。改停止逻辑时保持该不变量。
-- **错误约定**：可预期失败用 `RecorderError` 返回并在子命令边界转成 `ExitWithMessage`；不要在业务路径抛裸错误或打印堆栈。权限类错误统一映射为 `screenRecordingPermissionDenied`。
+- **线程模型**：[AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift) 的可变状态（`writer`/`writeError`）与 [WAVWriter](Sources/AppAudioRecorder/WAVWriter.swift) 的全部状态都只在串行队列 `sampleQueue` 上访问——ScreenCaptureKit 的 delegate 回调固定在该队列触发。引擎的 `@unchecked Sendable` 是为桥接这套回调式 API 的**有依据**标注（`WAVWriter` 因此可保持 `nonisolated` 非 Sendable、无需加锁）。**新增可变状态必须走同一队列**，否则破坏该前提。
+- **文件关闭时机**：`stop()` 在 `sampleQueue` 上同步调用 `writer.finish()`（置空文件句柄）以写回 WAV 头长度；不要改成异步或提前释放。
+- **停止逻辑**：Ctrl-C 与定时超时由 `RecordCommand.waitForStop` 用 `TaskGroup` 竞速，谁先满足谁 `cancelAll` 其余子任务；[InterruptSignal](Sources/AppAudioRecorder/InterruptSignal.swift) 的 `AsyncStream.onTermination` 负责关闭信号源。用结构化并发处理竞争，**不要退回手动锁/continuation**。
+- **错误约定**：可预期失败用 `throws(RecorderError)`（typed throws）返回，`RecorderError` 遵从 `LocalizedError`，由 ArgumentParser 在命令边界直接打印友好信息；**不要在业务路径抛裸错误或打印堆栈**，也不要再加中间退出包装类型。权限类错误统一映射为 `screenRecordingPermissionDenied`。
 - **输出格式**：落盘固定 16-bit PCM WAV；采样率/声道由 `--sample-rate`/`--channels` 决定（默认 48kHz 立体声），`processingFormat` 与 ScreenCaptureKit 输入对齐。
 
 ## 已知限制与扩展点

@@ -6,6 +6,9 @@ vars:
   BIN: app-audio-recorder
   RELEASE_BIN: .build/release/{{.BIN}}
   INSTALL_DIR: /usr/local/bin
+  # 在嵌套沙箱环境（如 IDE Agent）里，SwiftPM 自带的 sandbox-exec 会与外层沙箱冲突
+  # （sandbox_apply: Operation not permitted）。禁用 SwiftPM 沙箱以规避；本地正常终端下加不加都可。
+  SANDBOX_FLAG: --disable-sandbox
 
 tasks:
   default:
@@ -17,27 +20,27 @@ tasks:
   build:
     desc: debug 构建
     cmds:
-      - swift build
+      - swift build {{.SANDBOX_FLAG}}
 
   build:release:
     desc: release 构建，产物在 .build/release/{{.BIN}}
     cmds:
-      - swift build -c release
+      - swift build {{.SANDBOX_FLAG}} -c release
 
   run:
     desc: 运行工具，额外参数用 -- 透传（如 task run -- list）
     cmds:
-      - swift run {{.BIN}} {{.CLI_ARGS}}
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} {{.CLI_ARGS}}
 
   list:
     desc: 列出可录音的运行中 app
     cmds:
-      - swift run {{.BIN}} list
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} list
 
   record:
     desc: 录制（默认微信），Ctrl-C 结束；参数用 -- 透传（如 task record -- --app WeChat）
     cmds:
-      - swift run {{.BIN}} record {{.CLI_ARGS}}
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record {{.CLI_ARGS}}
 
   install:
     desc: release 构建并安装到 {{.INSTALL_DIR}}
@@ -48,4 +51,4 @@ tasks:
   clean:
     desc: 清理构建产物
     cmds:
-      - swift package clean
+      - swift package {{.SANDBOX_FLAG}} clean

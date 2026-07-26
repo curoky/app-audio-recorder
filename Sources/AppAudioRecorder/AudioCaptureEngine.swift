@@ -1,37 +1,46 @@
 import AVFoundation
 import CoreMedia
-import Foundation
 import ScreenCaptureKit
 
-/// 基于 ScreenCaptureKit 的按 app 音频捕获引擎。
+/// 基于 ScreenCaptureKit 的按 app 音频捕获引擎，可选同时捕获麦克风输入。
 ///
-/// 设计约束：
-/// - 所有对可变状态（`audioFile`/`converter`/`totalFrames`）的访问都在 `sampleQueue`
-///   这一条串行队列上完成，因此对外标记 `@unchecked Sendable` 是安全的。
-/// - 只捕获音频，视频配置压到最小以降低开销。
+/// 只负责捕获生命周期与样本转发；样本落盘交给 `WAVWriter`（app 与 mic 各一路）。
+///
+/// 并发模型：ScreenCaptureKit 的 `SCStreamOutput`/`SCStreamDelegate` 回调是同步的，
+/// 固定在初始化时传入的串行队列 `sampleQueue` 上触发。所有可变状态（`appWriter`/
+/// `micWriter`/`writeError`）都只在该队列上访问，故对外标记 `@unchecked Sendable` 是有依据的
+/// ——这是桥接回调式 API 的必要手段，而非规避编译期检查。
 final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    let outputURL: URL
-
-    private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
-    private var stream: SCStream?
-    private var audioFile: AVAudioFile?
-    private var converter: AVAudioConverter?
-    private var totalFrames: AVAudioFramePosition = 0
-    private var writeError: Error?
-
-    /// 采样率与声道数，用于报告与文件头。
     let sampleRate: Int
     let channelCount: Int
+    /// 是否同时捕获麦克风输入。
+    let capturesMicrophone: Bool
 
-    init(outputURL: URL, sampleRate: Int = 48_000, channelCount: Int = 2) {
-        self.outputURL = outputURL
+    private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
+    private let appWriter: WAVWriter
+    private let micWriter: WAVWriter?
+    private var stream: SCStream?
+    private var writeError: Error?
+
+    /// - Parameters:
+    ///   - appOutputURL: app 音频落盘路径。
+    ///   - micOutputURL: 麦克风落盘路径；为 nil 时不捕获麦克风。
+    init(
+        appOutputURL: URL,
+        micOutputURL: URL?,
+        sampleRate: Int = 48_000,
+        channelCount: Int = 2
+    ) {
         self.sampleRate = sampleRate
         self.channelCount = channelCount
+        self.capturesMicrophone = micOutputURL != nil
+        self.appWriter = WAVWriter(outputURL: appOutputURL)
+        self.micWriter = micOutputURL.map { WAVWriter(outputURL: $0) }
     }
 
-    /// 已写入的时长（秒），供结束时报告。
+    /// 已写入的时长（秒），以 app 音轨为准，供结束时报告。
     var recordedSeconds: Double {
-        sampleQueue.sync { Double(totalFrames) / Double(sampleRate) }
+        sampleQueue.sync { Double(appWriter.totalFrames) / Double(sampleRate) }
     }
 
     // MARK: - 生命周期
@@ -43,6 +52,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         config.channelCount = channelCount
         // 不录制自己进程的声音。
         config.excludesCurrentProcessAudio = true
+        if capturesMicrophone {
+            // macOS 15+：让 SCStream 额外输出一路麦克风。两路共享同一时钟、同时开始。
+            config.captureMicrophone = true
+        }
         // 只要音频，视频压到最小以省资源。
         config.width = 2
         config.height = 2
@@ -51,6 +64,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
         let stream = SCStream(filter: filter, configuration: config, delegate: self)
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: sampleQueue)
+        if capturesMicrophone {
+            try stream.addStreamOutput(self, type: .microphone, sampleHandlerQueue: sampleQueue)
+        }
         try await stream.startCapture()
         self.stream = stream
     }
@@ -60,107 +76,42 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             try await stream.stopCapture()
             self.stream = nil
         }
-        // 在采样队列上同步关闭文件，确保 WAV 头长度被正确写回。
-        sampleQueue.sync { self.audioFile = nil }
-        if let writeError {
-            throw writeError
+        // 在采样队列上同步收尾，确保各路 WAV 头长度被正确写回。
+        try sampleQueue.sync {
+            appWriter.finish()
+            micWriter?.finish()
+            if let writeError { throw writeError }
         }
     }
 
-    // MARK: - SCStreamOutput
+    // MARK: - SCStreamOutput（仅在 sampleQueue 上回调）
 
     func stream(
         _ stream: SCStream,
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
-        guard type == .audio else { return }
+        guard writeError == nil else { return }
         guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else { return }
-        write(sampleBuffer)
+
+        let writer: WAVWriter?
+        switch type {
+        case .audio: writer = appWriter
+        case .microphone: writer = micWriter
+        default: writer = nil
+        }
+        guard let writer else { return }
+
+        do {
+            try writer.write(sampleBuffer)
+        } catch {
+            writeError = error
+        }
     }
 
     // MARK: - SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         sampleQueue.async { self.writeError = error }
-    }
-
-    // MARK: - 写文件（仅在 sampleQueue 上调用）
-
-    private func write(_ sampleBuffer: CMSampleBuffer) {
-        guard writeError == nil else { return }
-        guard let input = Self.makePCMBuffer(from: sampleBuffer) else { return }
-        do {
-            let file = try ensureFile(inputFormat: input.format)
-            let target = file.processingFormat
-            let buffer: AVAudioPCMBuffer
-            if input.format.isEqual(target) {
-                buffer = input
-            } else {
-                buffer = try convert(input, to: target)
-            }
-            try file.write(from: buffer)
-            totalFrames += AVAudioFramePosition(buffer.frameLength)
-        } catch {
-            writeError = error
-        }
-    }
-
-    private func ensureFile(inputFormat: AVAudioFormat) throws -> AVAudioFile {
-        if let audioFile { return audioFile }
-        // 落盘为 16-bit 整型 PCM 的 WAV，兼容性最佳；
-        // processingFormat 会是同采样率/声道的 float 交错格式，与 ScreenCaptureKit 输入一致。
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: inputFormat.sampleRate,
-            AVNumberOfChannelsKey: Int(inputFormat.channelCount),
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false,
-        ]
-        let file = try AVAudioFile(forWriting: outputURL, settings: settings)
-        audioFile = file
-        return file
-    }
-
-    private func convert(_ input: AVAudioPCMBuffer, to target: AVAudioFormat) throws -> AVAudioPCMBuffer {
-        let converter: AVAudioConverter
-        if let existing = self.converter, existing.inputFormat.isEqual(input.format) {
-            converter = existing
-        } else {
-            guard let created = AVAudioConverter(from: input.format, to: target) else {
-                throw RecorderError.audioConversionFailed
-            }
-            self.converter = created
-            converter = created
-        }
-        guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: input.frameLength) else {
-            throw RecorderError.audioConversionFailed
-        }
-        try converter.convert(to: output, from: input)
-        return output
-    }
-
-    /// 把 ScreenCaptureKit 的 `CMSampleBuffer` 转成 `AVAudioPCMBuffer`。
-    private static func makePCMBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
-        guard let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
-              var asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee,
-              let format = AVAudioFormat(streamDescription: &asbd)
-        else { return nil }
-
-        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        guard frameCount > 0,
-              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
-        else { return nil }
-        buffer.frameLength = frameCount
-
-        let status = CMSampleBufferCopyPCMDataIntoAudioBufferList(
-            sampleBuffer,
-            at: 0,
-            frameCount: Int32(frameCount),
-            into: buffer.mutableAudioBufferList
-        )
-        guard status == noErr else { return nil }
-        return buffer
     }
 }
