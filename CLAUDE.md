@@ -61,11 +61,13 @@ app-audio-recorder record --duration 30                # 定时 30 秒后自动�
 | `<app-input>` | 必填 | 第一路输入 WAV（如 `record` 产出的 `-app.wav`），支持 `~` 展开 |
 | `<mic-input>` | 必填 | 第二路输入 WAV（如 `-mic.wav`），支持 `~` 展开 |
 | `--output` / `-o` | 第一路同目录 `<基名>-merged.wav` | 输出 WAV 路径。默认会把第一路的 `-app` 后缀去掉再补 `-merged` |
+| `--gain` | `0.707` | 混音增益，两路相加前统一乘的系数（须 > 0）。`0.5` 保证不削波，`0.707`≈-3dB 折中，`1.0` 等量叠加 |
 
 ```bash
 # record 产出两路后，按需合并：
 app-audio-recorder merge 微信-20260727-app.wav 微信-20260727-mic.wav
 app-audio-recorder merge a-app.wav a-mic.wav -o ~/Desktop/mix.wav
+app-audio-recorder merge a-app.wav a-mic.wav --gain 0.5   # 保证不削波
 ```
 
 ### 输出文件
@@ -120,6 +122,6 @@ CLI 入口聚合三个子命令，捕获逻辑与内容解析分层：
 
 ## 已知限制与扩展点
 
-- **麦克风混录**：`record` 默认同时录麦克风并产出 app/mic 两路独立文件（`--no-mic` 回到 app 单文件）；合并是独立的 `merge` 命令，离线逐样本相加并硬限幅防削波，不做增益归一化或降噪。
+- **麦克风混录**：`record` 默认同时录麦克风并产出 app/mic 两路独立文件（`--no-mic` 回到 app 单文件）；合并是独立的 `merge` 命令，离线按 `--gain` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要再评估 `AVAudioEngine` 原生方案。
 - **微信 bundleId 硬编码**为 `com.tencent.xinWeChat`（见 [ContentResolver.wechatBundleID](Sources/AppAudioRecorder/ContentResolver.swift#L7)）；版本不同则需 `list` 查到后用 `--app` 指定。
 - **分发**：作为独立 app 分发时建议带 `Info.plist`（`NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription`）与签名，以获得更稳定的授权体验。

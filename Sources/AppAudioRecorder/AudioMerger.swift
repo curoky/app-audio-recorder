@@ -4,15 +4,19 @@ import Foundation
 /// 把两路 WAV（app 音频 + 麦克风）离线混音成一个文件。
 ///
 /// 由独立的 `merge` 子命令调用（录制与混音解耦：`record` 只产出两路独立文件，
-/// 合并按需手动跑）。混音在浮点域逐样本相加并硬限幅到 [-1, 1] 防削波；
-/// 两路时长不一致时以较长者为准，较短一路缺失部分按静音处理。
+/// 合并按需手动跑）。混音在浮点域先把两路各乘以 `gain` 再逐样本相加，最后硬限幅到
+/// [-1, 1] 兜底防削波；两路时长不一致时以较长者为准，较短一路缺失部分按静音处理。
+///
+/// `gain` 相当于对整体混音的缩放（`gain * (app + mic)`）：传 0.5 可保证数学上不削波，
+/// 0.707（-3dB）是响度与安全的折中，1.0 为等量叠加（仍靠硬限幅兜底）。
 ///
 /// CPU 密集，调用方应放到后台执行（`@concurrent`），不占用协作线程池。
 enum AudioMerger {
     /// 把 `appURL` 与 `micURL` 混音写入 `outputURL`（16-bit PCM WAV）。
-    static func merge(appURL: URL, micURL: URL, outputURL: URL) throws(RecorderError) {
+    /// - Parameter gain: 两路相加前统一乘的线性增益，须 > 0。
+    static func merge(appURL: URL, micURL: URL, outputURL: URL, gain: Float) throws(RecorderError) {
         do {
-            try mergeThrowing(appURL: appURL, micURL: micURL, outputURL: outputURL)
+            try mergeThrowing(appURL: appURL, micURL: micURL, outputURL: outputURL, gain: gain)
         } catch let error as RecorderError {
             throw error
         } catch {
@@ -20,7 +24,7 @@ enum AudioMerger {
         }
     }
 
-    private static func mergeThrowing(appURL: URL, micURL: URL, outputURL: URL) throws {
+    private static func mergeThrowing(appURL: URL, micURL: URL, outputURL: URL, gain: Float) throws {
         let appFile = try AVAudioFile(forReading: appURL)
         let micFile = try AVAudioFile(forReading: micURL)
 
@@ -60,8 +64,9 @@ enum AudioMerger {
             for frame in 0..<Int(frames) {
                 let a = frame < appCount ? appPtr[frame] : 0
                 let m = frame < micCount ? micPtr[frame] : 0
-                // 相加后硬限幅，防止两路叠加溢出 [-1, 1] 造成削波失真。
-                outPtr[frame] = min(1, max(-1, a + m))
+                // 先按 gain 缩放两路之和，再硬限幅：gain<=0.5 时数学上必不削波，
+                // 更高增益（含 >1）靠 min/max 兜底，防止溢出 [-1, 1] 造成失真。
+                outPtr[frame] = min(1, max(-1, gain * (a + m)))
             }
         }
 
