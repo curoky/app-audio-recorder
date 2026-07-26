@@ -1,0 +1,51 @@
+# Taskfile：收敛项目常用命令。安装 task：https://taskfile.dev
+# 用法：task <名称>；给可执行文件传参用 -- 透传，如 `task record -- --app WeChat --duration 30`
+version: "3"
+
+vars:
+  BIN: app-audio-recorder
+  RELEASE_BIN: .build/release/{{.BIN}}
+  INSTALL_DIR: /usr/local/bin
+
+tasks:
+  default:
+    desc: 列出所有可用任务
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: debug 构建
+    cmds:
+      - swift build
+
+  build:release:
+    desc: release 构建，产物在 .build/release/{{.BIN}}
+    cmds:
+      - swift build -c release
+
+  run:
+    desc: 运行工具，额外参数用 -- 透传（如 task run -- list）
+    cmds:
+      - swift run {{.BIN}} {{.CLI_ARGS}}
+
+  list:
+    desc: 列出可录音的运行中 app
+    cmds:
+      - swift run {{.BIN}} list
+
+  record:
+    desc: 录制（默认微信），Ctrl-C 结束；参数用 -- 透传（如 task record -- --app WeChat）
+    cmds:
+      - swift run {{.BIN}} record {{.CLI_ARGS}}
+
+  install:
+    desc: release 构建并安装到 {{.INSTALL_DIR}}
+    deps: [build:release]
+    cmds:
+      - cp {{.RELEASE_BIN}} {{.INSTALL_DIR}}/
+
+  clean:
+    desc: 清理构建产物
+    cmds:
+      - swift package clean
