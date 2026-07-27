@@ -70,4 +70,11 @@ struct ApplicationBundleMatcher: Sendable {
             || (includesDescendantBundles
                 && bundleIdentifier.hasPrefix("\(rootBundleIdentifier)."))
     }
+
+    func belongsToSameFamily(as bundleIdentifier: String) -> Bool {
+        rootBundleIdentifier
+            == ApplicationBundleMatcher(
+                targetBundleIdentifier: bundleIdentifier
+            ).rootBundleIdentifier
+    }
 }

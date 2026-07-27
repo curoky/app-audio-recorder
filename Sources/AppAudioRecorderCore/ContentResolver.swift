@@ -55,6 +55,12 @@ enum ContentResolver {
         if let exact = apps.first(where: { $0.bundleIdentifier == query }) {
             return exact
         }
+        let queryMatcher = ApplicationBundleMatcher(targetBundleIdentifier: query)
+        if let byFamily = apps.first(where: {
+            queryMatcher.belongsToSameFamily(as: $0.bundleIdentifier)
+        }) {
+            return byFamily
+        }
         if let byName = apps.first(where: {
             $0.applicationName.localizedCaseInsensitiveContains(query)
                 || $0.bundleIdentifier.localizedCaseInsensitiveContains(query)

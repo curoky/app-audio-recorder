@@ -51,7 +51,7 @@ final class RecorderModel {
     }
 
     var isActive: Bool {
-        activity != .idle
+        activity != .idle || operationTask != nil
     }
 
     var isTransitioning: Bool {
@@ -180,6 +180,7 @@ final class RecorderModel {
                 application: application,
                 outputURL: outputURL,
                 capturesMicrophone: capturesMicrophone,
+                overwritesExistingOutput: false,
                 logger: logger
             )
             guard !Task.isCancelled else {

@@ -24,14 +24,23 @@ public struct RecordingResult: Sendable {
     public let warning: String?
 }
 
+protocol RecordingEngine: Sendable {
+    var recordedSeconds: Double { get async }
+
+    func waitForFailure() async
+    func stop() async throws
+}
+
+extension AudioCaptureEngine: RecordingEngine {}
+
 /// 一段正在进行的录制。停止操作幂等，CLI 与 GUI 可安全共享同一生命周期语义。
 public actor RecordingSession {
     public nonisolated let outputURL: URL
 
-    private let engine: AudioCaptureEngine
+    private let engine: any RecordingEngine
     private var stopTask: Task<RecordingResult, Never>?
 
-    init(engine: AudioCaptureEngine, outputURL: URL) {
+    init(engine: any RecordingEngine, outputURL: URL) {
         self.engine = engine
         self.outputURL = outputURL
     }
@@ -57,7 +66,7 @@ public actor RecordingSession {
             }
             return RecordingResult(
                 outputURL: outputURL,
-                recordedSeconds: engine.recordedSeconds,
+                recordedSeconds: await engine.recordedSeconds,
                 warning: warning
             )
         }
@@ -95,7 +104,7 @@ public enum Recorder {
         capturesMicrophone: Bool,
         sampleRate: Int = 48_000,
         channelCount: Int = 2,
-        overwritesExistingOutput: Bool = true,
+        overwritesExistingOutput: Bool = false,
         logger: Logger = AppLog.logger("capture")
     ) async throws -> RecordingSession {
         guard AudioFormatConstraints.sampleRates.contains(sampleRate),

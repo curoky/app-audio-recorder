@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import AppAudioRecorderCLI
 
@@ -23,6 +24,44 @@ final class CommandValidationTests: XCTestCase {
         XCTAssertThrowsError(try RecordCommand.parse(["--app", " \n "]))
     }
 
+    func testRecordRejectsBlankOutputPath() {
+        XCTAssertThrowsError(try RecordCommand.parse(["--output", " \n "]))
+    }
+
+    func testRecordDefaultOutputUsesFirstAvailableName() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let command = try RecordCommand.parse([])
+        let date = Date(timeIntervalSince1970: 0)
+
+        let first = try command.containerURL(
+            appName: "Test/App",
+            date: date,
+            defaultDirectory: directory
+        )
+        try Data().write(to: first)
+        let second = try command.containerURL(
+            appName: "Test/App",
+            date: date,
+            defaultDirectory: directory
+        )
+
+        XCTAssertEqual(second.deletingPathExtension().lastPathComponent, "\(first.deletingPathExtension().lastPathComponent)-2")
+        XCTAssertEqual(second.pathExtension, "m4a")
+    }
+
+    func testRecordExplicitOutputNormalizesSupportedExtension() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let command = try RecordCommand.parse([
+            "--output", directory.appendingPathComponent("call.wav").path,
+        ])
+
+        let output = try command.containerURL(appName: "Test")
+
+        XCTAssertEqual(output, directory.appendingPathComponent("call.m4a"))
+    }
+
     func testWatchRejectsInvalidConfiguration() {
         XCTAssertThrowsError(try WatchCommand.parse(["--sample-rate", "7999"]))
         XCTAssertThrowsError(try WatchCommand.parse(["--sample-rate", "48001"]))
@@ -45,5 +84,15 @@ final class CommandValidationTests: XCTestCase {
 
     func testWatchRejectsBlankAppQuery() {
         XCTAssertThrowsError(try WatchCommand.parse(["--app", " \n "]))
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        return directory
     }
 }

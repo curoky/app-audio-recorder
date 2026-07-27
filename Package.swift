@@ -52,5 +52,9 @@ let package = Package(
             name: "AppAudioRecorderCLITests",
             dependencies: ["AppAudioRecorderCLI"]
         ),
+        .testTarget(
+            name: "AppAudioRecorderGUITests",
+            dependencies: ["AppAudioRecorderGUI"]
+        ),
     ]
 )

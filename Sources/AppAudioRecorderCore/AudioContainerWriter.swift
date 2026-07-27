@@ -46,7 +46,7 @@ nonisolated final class AudioContainerWriter {
         sampleRate: Int,
         channels: Int,
         capturesMicrophone: Bool,
-        overwritesExistingOutput: Bool = true
+        overwritesExistingOutput: Bool = false
     ) throws {
         guard AudioFormatConstraints.sampleRates.contains(sampleRate),
               AudioFormatConstraints.channelCounts.contains(channels)

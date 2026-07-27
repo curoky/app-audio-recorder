@@ -39,6 +39,18 @@ final class CallApplicationTests: XCTestCase {
         XCTAssertTrue(whatsApp.matches("net.whatsapp.WhatsApp.ShareExtension"))
     }
 
+    func testMainAndHelperBundlesBelongToSameFamilyInBothDirections() {
+        let main = ApplicationBundleMatcher(
+            targetBundleIdentifier: "org.whispersystems.signal-desktop"
+        )
+        let helper = ApplicationBundleMatcher(
+            targetBundleIdentifier: "org.whispersystems.signal-desktop.helper.Renderer"
+        )
+
+        XCTAssertTrue(main.belongsToSameFamily(as: "org.whispersystems.signal-desktop.helper"))
+        XCTAssertTrue(helper.belongsToSameFamily(as: "org.whispersystems.signal-desktop"))
+    }
+
     func testTelegramVariantsRemainSeparateCaptureTargets() {
         let native = ApplicationBundleMatcher(
             targetBundleIdentifier: "ru.keepcoder.Telegram"
@@ -51,6 +63,7 @@ final class CallApplicationTests: XCTestCase {
         XCTAssertFalse(native.matches("org.telegram.desktop"))
         XCTAssertTrue(desktop.matches("org.telegram.desktop.helper"))
         XCTAssertFalse(desktop.matches("ru.keepcoder.Telegram"))
+        XCTAssertFalse(native.belongsToSameFamily(as: "org.telegram.desktop"))
     }
 
     func testUnknownApplicationMatcherRemainsExact() {

@@ -18,7 +18,7 @@ final class AudioContainerWriterTests: XCTestCase {
         )
     }
 
-    func testNonOverwritingWriterPreservesExistingFile() throws {
+    func testWriterPreservesExistingFileByDefault() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let output = directory.appendingPathComponent("existing.m4a")
@@ -30,8 +30,7 @@ final class AudioContainerWriterTests: XCTestCase {
                 outputURL: output,
                 sampleRate: 8_000,
                 channels: 1,
-                capturesMicrophone: false,
-                overwritesExistingOutput: false
+                capturesMicrophone: false
             )
         )
         XCTAssertEqual(try Data(contentsOf: output), original)
@@ -118,6 +117,71 @@ final class AudioContainerWriterTests: XCTestCase {
 
         let audibleStarts = try tracks.map { try firstAudibleFrame(asset: asset, track: $0) }.sorted()
         XCTAssertEqual(audibleStarts, [0, 2_000])
+    }
+
+    func testAcceptsTrackThatFirstProducesAudioAfterSessionStarts() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("late-track.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            sampleRate: 8_000,
+            channels: 1,
+            capturesMicrophone: true
+        )
+
+        try writer.append(
+            makeSampleBuffer(frameCount: 8_000, presentationTime: .zero),
+            to: .app
+        )
+        try await Task.sleep(for: .milliseconds(200))
+        try writer.append(
+            makeSampleBuffer(
+                frameCount: 800,
+                presentationTime: CMTime(seconds: 1, preferredTimescale: 8_000)
+            ),
+            to: .mic
+        )
+        try writer.finalizeInputs()
+        try await writer.completeWriting()
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 2)
+        let audibleStarts = try tracks.map { try firstAudibleFrame(asset: asset, track: $0) }.sorted()
+        XCTAssertEqual(audibleStarts, [0, 8_000])
+    }
+
+    func testWritesStereoSamples() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("stereo.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            sampleRate: 8_000,
+            channels: 2,
+            capturesMicrophone: false
+        )
+
+        try writer.append(
+            makeSampleBuffer(
+                frameCount: 800,
+                presentationTime: .zero,
+                channels: 2
+            ),
+            to: .app
+        )
+        try writer.finalizeInputs()
+        try await writer.completeWriting()
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 1)
+        let descriptions = try await tracks[0].load(.formatDescriptions)
+        let streamDescription = descriptions.first.flatMap {
+            CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee
+        }
+        XCTAssertEqual(streamDescription?.mChannelsPerFrame, 2)
     }
 
     func testFinalizePropagatesBufferedAppendFailure() throws {

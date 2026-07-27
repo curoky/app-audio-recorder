@@ -33,6 +33,9 @@ struct RecordCommand: AsyncParsableCommand {
         guard !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ValidationError("--app 不能为空。")
         }
+        if let output, output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw ValidationError("--output 不能为空。")
+        }
         guard AudioFormatConstraints.sampleRates.contains(sampleRate) else {
             throw ValidationError("--sample-rate 必须在 8000...48000 Hz 范围内（当前 \(sampleRate)）。")
         }
@@ -64,6 +67,7 @@ struct RecordCommand: AsyncParsableCommand {
             capturesMicrophone: mic,
             sampleRate: sampleRate,
             channelCount: channels,
+            overwritesExistingOutput: false,
             logger: logger
         )
         if duration > 0 {
@@ -127,29 +131,36 @@ struct RecordCommand: AsyncParsableCommand {
     }
 
     /// 从基础路径派生输出容器路径（单个 `.m4a` 多轨容器）。
-    private func containerURL(appName: String) throws -> URL {
-        let base = baseURL(appName: appName)
-        let dir = base.deletingLastPathComponent()
-        guard FileManager.default.isWritableFile(atPath: dir.path) else {
-            throw RecorderError.outputNotWritable(path: base.path)
+    func containerURL(
+        appName: String,
+        date: Date = Date(),
+        defaultDirectory: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        if let output {
+            let base = baseURL(output)
+            let directory = base.deletingLastPathComponent()
+            try RecordingFiles.validateOutputDirectory(directory, fileManager: fileManager)
+            return base.appendingPathExtension("m4a")
         }
-        return base.appendingPathExtension("m4a")
+
+        let directory = defaultDirectory
+            ?? URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
+        try RecordingFiles.validateOutputDirectory(directory, fileManager: fileManager)
+        return RecordingFiles.uniqueContainerURL(
+            applicationName: appName,
+            in: directory,
+            date: date,
+            fileManager: fileManager
+        )
     }
 
-    /// 基础路径（不含扩展名）：用户指定则去掉其 `.m4a`/`.wav` 扩展名，否则用当前目录带时间戳的名字。
-    private func baseURL(appName: String) -> URL {
-        if let output {
-            let expanded = URL(expandingPath: output)
-            let ext = expanded.pathExtension.lowercased()
-            return (ext == "m4a" || ext == "wav")
-                ? expanded.deletingPathExtension()
-                : expanded
-        }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
-        let safeName = appName.replacingOccurrences(of: "/", with: "-")
-        let name = "\(safeName)-\(formatter.string(from: Date()))"
-        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-            .appendingPathComponent(name)
+    /// 用户指定的基础路径；去掉 `.m4a`/`.wav` 后由调用方统一补 `.m4a`。
+    private func baseURL(_ output: String) -> URL {
+        let expanded = URL(expandingPath: output)
+        let ext = expanded.pathExtension.lowercased()
+        return (ext == "m4a" || ext == "wav")
+            ? expanded.deletingPathExtension()
+            : expanded
     }
 }

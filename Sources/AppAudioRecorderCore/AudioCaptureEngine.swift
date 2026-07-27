@@ -37,7 +37,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         capturesMicrophone: Bool,
         sampleRate: Int = 48_000,
         channelCount: Int = 2,
-        overwritesExistingOutput: Bool = true,
+        overwritesExistingOutput: Bool = false,
         logger: Logger = AppLog.logger("capture")
     ) {
         self.outputURL = outputURL
