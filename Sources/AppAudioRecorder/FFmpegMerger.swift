@@ -1,5 +1,7 @@
 import AVFoundation
 import Foundation
+import Subprocess
+import System
 
 /// 用 `ffmpeg` 把两路 WAV（app 音频 + 麦克风）离线混音成一个 16-bit PCM WAV。
 ///
@@ -73,37 +75,20 @@ enum FFmpegMerger {
         }
     }
 
-    /// 用固定路径的 `ffmpeg` 启动混音，await 子进程结束。
-    /// 可执行文件缺失时 `run()` 抛错，映射为「未安装」；启动成功但非 0 退出映射为混音失败。
+    /// 用固定路径的 `ffmpeg` 启动混音，await 子进程结束（`swift-subprocess`，async-native）。
+    /// 可执行文件缺失时 `run` 抛错，映射为「未安装」；启动成功但非 0 退出映射为混音失败。
     private static func run(_ args: [String]) async throws(RecorderError) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: ffmpegPath)
-        process.arguments = args
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        let status: Int32
+        let status: TerminationStatus
         do {
-            status = try await runProcess(process)
+            status = try await Subprocess.run(
+                .path(FilePath(ffmpegPath)),
+                arguments: Arguments(args),
+                output: .discarded,
+                error: .discarded
+            ).terminationStatus
         } catch {
             throw .mergeToolUnavailable
         }
-
-        guard status == 0 else { throw .audioMergeFailed }
-    }
-
-    /// 在 `run()` 之前登记 `terminationHandler`，规避「进程先结束、handler 后登记」的竞态。
-    private static func runProcess(_ process: Process) async throws -> Int32 {
-        try await withCheckedThrowingContinuation { continuation in
-            process.terminationHandler = { finished in
-                continuation.resume(returning: finished.terminationStatus)
-            }
-            do {
-                try process.run()
-            } catch {
-                process.terminationHandler = nil
-                continuation.resume(throwing: error)
-            }
-        }
+        guard status.isSuccess else { throw .audioMergeFailed }
     }
 }

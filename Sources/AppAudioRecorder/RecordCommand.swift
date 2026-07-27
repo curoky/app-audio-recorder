@@ -10,7 +10,7 @@ struct RecordCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "目标 app 的名称关键字或 bundleId，默认微信。")
     var app: String = ContentResolver.wechatBundleID
 
-    @Option(name: [.short, .long], help: "输出 WAV 基础路径，默认当前目录下带时间戳的文件。")
+    @Option(name: [.short, .long], help: "输出容器基础路径，默认当前目录下带时间戳的文件（产出 .m4a）。")
     var output: String?
 
     @Flag(name: .long, inversion: .prefixedNo, help: "是否同时录制麦克风输入（默认开启）。")

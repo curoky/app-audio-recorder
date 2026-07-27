@@ -9,12 +9,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        .package(url: "https://github.com/swiftlang/swift-subprocess", .upToNextMinor(from: "0.5.0")),
     ],
     targets: [
         .executableTarget(
             name: "AppAudioRecorder",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Subprocess", package: "swift-subprocess"),
             ],
             swiftSettings: [
                 // Swift 6.2 Approachable Concurrency：v6 语言模式 + 完整数据竞争检查。

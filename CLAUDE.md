@@ -7,7 +7,7 @@
 macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要独立 WAV 时用 `ffmpeg -c copy` 无损 demux，需要混音时用独立的 `merge` 子命令离线混音。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
-- 唯一 Swift 依赖：`swift-argument-parser`（构建 CLI）。
+- Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-subprocess`（async-native 启动 `ffmpeg` 子进程）。均编译进单可执行文件。
 - 外部命令：`merge` 子命令固定调用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**，路径见 [FFmpegMerger.ffmpegPath](Sources/AppAudioRecorder/FFmpegMerger.swift#L15-L16)）；`record`/`list` 不需要。
 - 产物：单可执行文件 `app-audio-recorder`。
 
@@ -122,7 +122,7 @@ CLI 入口聚合三个子命令，捕获逻辑与内容解析分层：
 
 - **线程模型**：[AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift) 的可变写入状态（`writer`/`writeError`）与 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 的全部状态都只在串行队列 `sampleQueue` 上访问——`SCStreamOutput` 回调注册到该队列，`SCStreamDelegate` 错误回调也显式转投该队列。app 与麦克风两路共用同一 `sampleQueue`，按 `SCStreamOutputType` 分发到容器的对应轨。引擎的 `@unchecked Sendable` 是为桥接这套回调式 API 的**有依据**标注（`AudioContainerWriter` 因此可保持 `nonisolated` 非 Sendable、无需加锁）。**新增可变写入状态必须走同一队列**，否则破坏该前提。
 - **容器收尾时机**：`stop()` 先在 `sampleQueue` 上同步调用 `writer.finalizeInputs()`（标记所有输入结束，此后不再有样本追加），再在队列之外 `await writer.completeWriting()` 触发 `AVAssetWriter.finishWriting` 把容器 flush 到磁盘。异步收尾必须在标记结束、确无并发追加后进行；即使 `SCStream.stopCapture()` 失败也要走完收尾以写出有效容器。
-- **录制与混音解耦**：`record` 只负责产出多轨容器，**不做混音**；合并由独立的 `merge` 子命令按需触发（合并前需先 `ffmpeg -c copy` demux 出两路 WAV）。[FFmpegMerger](Sources/AppAudioRecorder/FFmpegMerger.swift) 只负责构造参数并启动 `ffmpeg` 子进程，混音计算在**独立进程**里完成，不占用本进程的协作/并发线程池；`MergeCommand.mergeTracks` 因此是普通 `async`（等子进程），无需 `@concurrent`。
+- **录制与混音解耦**：`record` 只负责产出多轨容器，**不做混音**；合并由独立的 `merge` 子命令按需触发（合并前需先 `ffmpeg -c copy` demux 出两路 WAV）。[FFmpegMerger](Sources/AppAudioRecorder/FFmpegMerger.swift) 只负责构造参数并用 `swift-subprocess` 启动 `ffmpeg` 子进程，混音计算在**独立进程**里完成，不占用本进程的协作/并发线程池；`MergeCommand.run` 因此只是普通 `async`（await 子进程），无需 `@concurrent`。
 - **输出格式**：`record` 落盘固定为 `.m4a` 多轨容器，音轨为 ALAC 无损（16-bit 量化，与旧的 16-bit PCM 精度一致）；采样率/声道由 `--sample-rate`/`--channels` 决定（默认 48kHz 立体声）。`merge` 输出 16-bit PCM WAV（`pcm_s16le`），显式用 `-ar/-ac` 强制跟随第一路（app）音轨的采样率/声道（amix 自身格式协商**不保证**跟随第一路）；`amix=duration=longest` 使时长取较长者、较短一路缺失部分补静音，`normalize=0` + `volume=<gain>` 等价于 `gain*(app+mic)` 纯和缩放，`pcm_s16le` 编码的饱和量化即硬限幅。
 
 ## 已知限制与扩展点
