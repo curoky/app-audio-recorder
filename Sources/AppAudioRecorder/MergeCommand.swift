@@ -4,16 +4,13 @@ import Foundation
 struct MergeCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "merge",
-        abstract: "把两路 WAV（如 record 产出的 app 与 mic）离线混音成一个文件。"
+        abstract: "把 record 产出的多轨容器（app + mic 两条轨）离线混音成一个 WAV。"
     )
 
-    @Argument(help: "第一路输入 WAV 路径（如 app 音频）。")
-    var appInput: String
+    @Argument(help: "输入多轨容器路径（record 产出的 .m4a，含 app 与 mic 两条音轨）。")
+    var container: String
 
-    @Argument(help: "第二路输入 WAV 路径（如麦克风）。")
-    var micInput: String
-
-    @Option(name: [.short, .long], help: "输出 WAV 路径，默认在第一路同目录生成 <名>-merged.wav。")
+    @Option(name: [.short, .long], help: "输出 WAV 路径，默认在容器同目录生成 <名>-merged.wav。")
     var output: String?
 
     @Option(help: "混音增益：两路相加前统一乘的系数。0.5 保证不削波，0.707≈-3dB 折中，1.0 等量叠加。")
@@ -26,39 +23,34 @@ struct MergeCommand: AsyncParsableCommand {
     }
 
     func run() async throws {
-        let appURL = URL(expandingPath: appInput)
-        let micURL = URL(expandingPath: micInput)
-        for url in [appURL, micURL] where !FileManager.default.isReadableFile(atPath: url.path) {
-            throw RecorderError.inputNotReadable(path: url.path)
+        let containerURL = URL(expandingPath: container)
+        guard FileManager.default.isReadableFile(atPath: containerURL.path) else {
+            throw RecorderError.inputNotReadable(path: containerURL.path)
         }
 
-        let outputURL = resolveOutputURL(appURL: appURL)
-        let standardizedOutput = outputURL.standardizedFileURL
-        if [appURL, micURL].contains(where: { $0.standardizedFileURL == standardizedOutput }) {
+        let outputURL = resolveOutputURL(containerURL: containerURL)
+        if outputURL.standardizedFileURL == containerURL.standardizedFileURL {
             throw RecorderError.outputConflictsWithInput(path: outputURL.path)
         }
         guard FileManager.default.isWritableFile(atPath: outputURL.deletingLastPathComponent().path) else {
             throw RecorderError.outputNotWritable(path: outputURL.path)
         }
 
-        print("混音输入 : \(appURL.path)")
-        print("           \(micURL.path)")
+        print("混音输入 : \(containerURL.path)")
         print("输出文件 : \(outputURL.path)")
         print("混音增益 : \(gain)")
         print("正在合并音轨…")
-        try await FFmpegMerger.merge(appURL: appURL, micURL: micURL, outputURL: outputURL, gain: gain)
+        try await FFmpegMerger.merge(containerURL: containerURL, outputURL: outputURL, gain: gain)
         print("已保存：\(outputURL.path)")
     }
 
-    /// 输出路径：用户指定则用之，否则在第一路输入同目录生成 `<去掉-app 后缀的基名>-merged.wav`。
-    private func resolveOutputURL(appURL: URL) -> URL {
+    /// 输出路径：用户指定则用之，否则在容器同目录生成 `<容器基名>-merged.wav`。
+    private func resolveOutputURL(containerURL: URL) -> URL {
         if let output {
             return URL(expandingPath: output)
         }
-        // record 产出的 app 文件名形如 `<base>-app.wav`，去掉 `-app` 得到干净基名。
-        let stem = appURL.deletingPathExtension().lastPathComponent
-        let base = stem.hasSuffix("-app") ? String(stem.dropLast(4)) : stem
-        return appURL.deletingLastPathComponent()
+        let base = containerURL.deletingPathExtension().lastPathComponent
+        return containerURL.deletingLastPathComponent()
             .appendingPathComponent("\(base)-merged")
             .appendingPathExtension("wav")
     }

@@ -3,31 +3,32 @@ import Foundation
 import Subprocess
 import System
 
-/// 用 `ffmpeg` 把两路 WAV（app 音频 + 麦克风）离线混音成一个 16-bit PCM WAV。
+/// 用 `ffmpeg` 把 `record` 产出的多轨容器（轨 0=app 音频、轨 1=麦克风）离线混音成一个
+/// 16-bit PCM WAV。
 ///
-/// 由 `merge` 子命令调用。混音语义与旧的原生实现一致：
+/// 由 `merge` 子命令调用，直接读单个 `.m4a` 容器、用 `[0:a:0][0:a:1]` 引用两条轨，无需先
+/// `ffmpeg -c copy` demux。混音语义：
 /// - `amix=normalize=0` + `volume=<gain>` 等价 `gain * (app + mic)`（纯和后统一缩放），
 ///   `pcm_s16le` 编码对越界样本饱和 clamp，等价硬限幅防削波；
 /// - `duration=longest` 让时长取较长一路，较短一路结束后按静音补齐；
-/// - 输出显式 `-ar/-ac` 跟随第一路（app）的采样率/声道——`amix` 自身的格式协商并不
+/// - 输出显式 `-ar/-ac` 跟随轨 0（app）的采样率/声道——`amix` 自身的格式协商并不
 ///   保证跟随第一路，必须强制。
 ///
-/// 第一路格式用 `AVAudioFile` 探测（只读元数据，不做 DSP），因此只依赖 `ffmpeg` 一个外部命令。
+/// 轨 0 格式用 `AVURLAsset` 读取容器音轨元数据（只读，不做 DSP），并借此校验容器至少有两条
+/// 音轨，因此只依赖 `ffmpeg` 一个外部命令。
 enum FFmpegMerger {
     /// 固定的 `ffmpeg` 可执行路径（自编译静态版本），不依赖 `PATH` 查找。
     static let ffmpegPath = "/opt/sb/bin/ffmpeg"
 
-    /// 混音入口：探测第一路格式 → 构造参数 → 调用 `ffmpeg`。
+    /// 混音入口：读取容器轨 0 格式 → 构造参数 → 调用 `ffmpeg`。
     static func merge(
-        appURL: URL,
-        micURL: URL,
+        containerURL: URL,
         outputURL: URL,
         gain: Float
     ) async throws(RecorderError) {
-        let format = try probeFormat(appURL)
+        let format = try await probe(containerURL)
         let args = arguments(
-            appURL: appURL,
-            micURL: micURL,
+            containerURL: containerURL,
             outputURL: outputURL,
             sampleRate: format.sampleRate,
             channels: format.channels,
@@ -38,8 +39,7 @@ enum FFmpegMerger {
 
     /// 构造 `ffmpeg` 参数（不含可执行名），抽成纯函数便于单测。
     static func arguments(
-        appURL: URL,
-        micURL: URL,
+        containerURL: URL,
         outputURL: URL,
         sampleRate: Int,
         channels: Int,
@@ -48,12 +48,11 @@ enum FFmpegMerger {
         // %g 避免 Float 打印出多余精度或科学计数法（0.707 → "0.707"）。
         let gainLiteral = String(format: "%g", Double(gain))
         let filter =
-            "[0:a][1:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
+            "[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,"
             + "volume=\(gainLiteral)[out]"
         return [
             "-hide_banner", "-nostdin", "-y",
-            "-i", appURL.path,
-            "-i", micURL.path,
+            "-i", containerURL.path,
             "-filter_complex", filter,
             "-map", "[out]",
             "-ar", "\(sampleRate)",
@@ -65,14 +64,30 @@ enum FFmpegMerger {
 
     // MARK: - 私有
 
-    private static func probeFormat(_ url: URL) throws(RecorderError) -> (sampleRate: Int, channels: Int) {
+    /// 读取容器音轨：要求至少两条（app + mic），返回轨 0（app）的采样率/声道。
+    /// 用 `AVURLAsset` 显式加载音轨，对多轨容器行为确定；单轨（`--no-mic` 产物）则报错。
+    private static func probe(_ url: URL) async throws(RecorderError) -> (sampleRate: Int, channels: Int) {
+        let asset = AVURLAsset(url: url)
+        let tracks: [AVAssetTrack]
         do {
-            let file = try AVAudioFile(forReading: url)
-            let format = file.processingFormat
-            return (Int(format.sampleRate), Int(format.channelCount))
+            tracks = try await asset.loadTracks(withMediaType: .audio)
         } catch {
             throw .audioMergeFailed
         }
+        guard tracks.count >= 2 else { throw .containerMissingSecondTrack }
+
+        let formatDescriptions: [CMFormatDescription]
+        do {
+            formatDescriptions = try await tracks[0].load(.formatDescriptions)
+        } catch {
+            throw .audioMergeFailed
+        }
+        guard let description = formatDescriptions.first,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee
+        else {
+            throw .audioMergeFailed
+        }
+        return (Int(asbd.mSampleRate), Int(asbd.mChannelsPerFrame))
     }
 
     /// 用固定路径的 `ffmpeg` 启动混音，await 子进程结束（`swift-subprocess`，async-native）。

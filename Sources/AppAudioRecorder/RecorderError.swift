@@ -10,6 +10,7 @@ enum RecorderError: LocalizedError {
     case audioCaptureFailed
     case audioMergeFailed
     case mergeToolUnavailable
+    case containerMissingSecondTrack
     case inputNotReadable(path: String)
     case outputNotWritable(path: String)
     case outputConflictsWithInput(path: String)
@@ -39,6 +40,11 @@ enum RecorderError: LocalizedError {
             """
             未找到 ffmpeg，无法执行合并。
             本工具固定使用 \(FFmpegMerger.ffmpegPath)，请确认该文件存在且可执行，然后重新运行。
+            """
+        case .containerMissingSecondTrack:
+            """
+            容器只有一条音轨，无法混音（merge 需要 app + mic 两条轨）。
+            该文件可能是 record --no-mic 产出的单轨容器；只录 app 音频时无需合并。
             """
         case let .inputNotReadable(path):
             "输入文件不存在或不可读：\(path)"
