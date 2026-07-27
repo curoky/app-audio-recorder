@@ -25,7 +25,7 @@ final class RecorderModelTests: XCTestCase {
         XCTAssertEqual(model.recordingConfiguration.sampleRate, .hz48K)
         XCTAssertEqual(model.recordingConfiguration.channelCount, .stereo)
         XCTAssertTrue(model.recordingConfiguration.capturesMicrophone)
-        XCTAssertEqual(model.callEndDelay, .twoSeconds)
+        XCTAssertFalse(model.isCallMonitoring)
     }
 
     func testRecordingConfigurationOffersCommonAudioFormats() {
@@ -45,6 +45,37 @@ final class RecorderModelTests: XCTestCase {
         model.triggerPrimaryAction()
 
         XCTAssertTrue(model.isActive)
+        await model.shutdown()
+        XCTAssertFalse(model.isActive)
+    }
+
+    func testCallReminderRequiresManualRecordingAndOnlyFiresOncePerCall() async {
+        var notificationCount = 0
+        let model = RecorderModel(notifyCallDetected: {
+            notificationCount += 1
+        })
+        let application = CapturableApplication(
+            name: "Example",
+            bundleIdentifier: "com.example.Audio",
+            processID: 1
+        )
+        model.applications = [application]
+        model.selectApplication(bundleIdentifier: application.bundleIdentifier)
+
+        model.setCallMonitoringEnabled(true)
+        model.handleCallActivity(true)
+        model.handleCallActivity(true)
+
+        XCTAssertTrue(model.isCallMonitoring)
+        XCTAssertFalse(model.isRecording)
+        XCTAssertEqual(notificationCount, 1)
+        XCTAssertNotNil(model.callReminderMessage)
+
+        model.handleCallActivity(false)
+        model.handleCallActivity(true)
+
+        XCTAssertEqual(notificationCount, 2)
+        model.setCallMonitoringEnabled(false)
         await model.shutdown()
         XCTAssertFalse(model.isActive)
     }

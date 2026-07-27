@@ -2,42 +2,45 @@ import AppKit
 import Foundation
 import Observation
 
-enum RecorderMode: String, CaseIterable, Identifiable {
-    case manual = "手动录制"
-    case automatic = "自动监听"
-
-    var id: Self { self }
-}
-
 @MainActor
 @Observable
 final class RecorderModel {
-    var mode = RecorderMode.manual
     var applications: [CapturableApplication] = []
     private(set) var selectedBundleIdentifier: String?
     var recordingConfiguration = RecordingConfiguration()
-    var callEndDelay = CallEndDelay.twoSeconds
     var outputDirectory: URL
     var errorMessage: String?
+    private(set) var callReminderMessage: String?
 
     private(set) var isRefreshing = false
     private(set) var statusMessage = "正在读取可录音的 app…"
     private(set) var recordingStartedAt: Date?
     private(set) var latestOutputURL: URL?
+    private(set) var isCallMonitoring = false
 
-    @ObservationIgnored private var manualSession: RecordingSession?
-    @ObservationIgnored private var watcher: CallRecordingWatcher?
+    @ObservationIgnored private var recordingSession: RecordingSession?
+    @ObservationIgnored private var callMonitor: CallActivityMonitor?
+    @ObservationIgnored private var callMonitorTask: Task<Void, Never>?
     @ObservationIgnored private var failureTask: Task<Void, Never>?
-    @ObservationIgnored private var watcherTask: Task<Void, Never>?
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let notifyCallDetected: @MainActor () -> Void
+    private var monitoredApplicationName: String?
+    private var isCallActive = false
     private var activity = Activity.idle
 
     private static let outputDirectoryKey = "outputDirectory"
     private static let selectedBundleIdentifierKey = "selectedBundleIdentifier"
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        notifyCallDetected: @escaping @MainActor () -> Void = {
+            NSSound.beep()
+            NSApplication.shared.requestUserAttention(.informationalRequest)
+        }
+    ) {
         self.defaults = defaults
+        self.notifyCallDetected = notifyCallDetected
         selectedBundleIdentifier = defaults.string(forKey: Self.selectedBundleIdentifierKey)
 
         if let saved = defaults.string(forKey: Self.outputDirectoryKey) {
@@ -55,7 +58,15 @@ final class RecorderModel {
     }
 
     var isActive: Bool {
-        activity != .idle || operationTask != nil
+        isRecordingOperationActive || isCallMonitoring
+    }
+
+    var isTargetSelectionLocked: Bool {
+        isRecordingOperationActive || isCallMonitoring
+    }
+
+    var isRecordingConfigurationLocked: Bool {
+        isRecordingOperationActive
     }
 
     var isTransitioning: Bool {
@@ -69,20 +80,24 @@ final class RecorderModel {
     var primaryButtonTitle: String {
         switch activity {
         case .idle:
-            mode == .manual ? "开始录制" : "开始监听"
+            "开始录制"
         case .preparing:
             "正在准备…"
-        case .listening:
-            "停止监听"
         case .recording:
-            mode == .manual ? "停止录制" : "停止监听"
+            "停止录制"
         case .stopping:
             "正在保存…"
         }
     }
 
     var canPerformPrimaryAction: Bool {
-        !isTransitioning && (isActive || selectedApplication != nil)
+        operationTask == nil
+            && !isTransitioning
+            && (activity != .idle || selectedApplication != nil)
+    }
+
+    private var isRecordingOperationActive: Bool {
+        activity != .idle || operationTask != nil
     }
 
     func selectApplication(bundleIdentifier: String) {
@@ -91,7 +106,7 @@ final class RecorderModel {
     }
 
     func refreshApplications() async {
-        guard !isActive else { return }
+        guard !isTargetSelectionLocked else { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
@@ -130,7 +145,7 @@ final class RecorderModel {
     }
 
     func chooseOutputDirectory() {
-        guard !isActive else { return }
+        guard !isRecordingOperationActive else { return }
         let panel = NSOpenPanel()
         panel.title = "选择录音保存目录"
         panel.canChooseFiles = false
@@ -146,10 +161,29 @@ final class RecorderModel {
 
     func triggerPrimaryAction() {
         guard operationTask == nil else { return }
+        callReminderMessage = nil
         operationTask = Task { [weak self] in
             await self?.performPrimaryAction()
             self?.operationTask = nil
         }
+    }
+
+    func setCallMonitoringEnabled(_ enabled: Bool) {
+        if enabled {
+            startCallMonitoring()
+        } else {
+            _ = stopCallMonitoring()
+        }
+    }
+
+    func startRecordingFromReminder() {
+        callReminderMessage = nil
+        guard !isRecordingOperationActive else { return }
+        triggerPrimaryAction()
+    }
+
+    func dismissCallReminder() {
+        callReminderMessage = nil
     }
 
     func shutdown() async {
@@ -157,37 +191,27 @@ final class RecorderModel {
         await operationTask?.value
         operationTask = nil
 
-        if manualSession != nil {
-            await finishManualRecording()
-        } else if watcher != nil {
-            await stopWatching()
+        if recordingSession != nil {
+            await finishRecording()
         } else {
             await failureTask?.value
         }
+        let monitorTask = stopCallMonitoring()
+        await monitorTask?.value
     }
 
     private func performPrimaryAction() async {
         switch activity {
         case .idle:
-            if mode == .manual {
-                await startManualRecording()
-            } else {
-                await startWatching()
-            }
-        case .listening:
-            await stopWatching()
+            await startRecording()
         case .recording:
-            if mode == .manual {
-                await finishManualRecording()
-            } else {
-                await stopWatching()
-            }
+            await finishRecording()
         case .preparing, .stopping:
             break
         }
     }
 
-    private func startManualRecording() async {
+    private func startRecording() async {
         guard let application = selectedApplication else { return }
         activity = .preparing
         statusMessage = "正在准备录制…"
@@ -209,7 +233,7 @@ final class RecorderModel {
                 activity = .idle
                 return
             }
-            manualSession = session
+            recordingSession = session
             recordingStartedAt = Date()
             activity = .recording
             statusMessage = "正在录制 \(application.name)"
@@ -221,7 +245,7 @@ final class RecorderModel {
                     case .warning(let message):
                         self?.errorMessage = message
                     case .failure:
-                        await self?.finishManualRecording()
+                        await self?.finishRecording()
                         return
                     }
                 }
@@ -233,9 +257,9 @@ final class RecorderModel {
         }
     }
 
-    private func finishManualRecording() async {
-        guard let session = manualSession else { return }
-        manualSession = nil
+    private func finishRecording() async {
+        guard let session = recordingSession else { return }
+        recordingSession = nil
         failureTask?.cancel()
         activity = .stopping
         statusMessage = "正在保存录音…"
@@ -247,90 +271,80 @@ final class RecorderModel {
         recordingStartedAt = nil
     }
 
-    private func startWatching() async {
-        guard let application = selectedApplication else { return }
-        activity = .preparing
-        statusMessage = "正在启动监听…"
+    private func startCallMonitoring() {
+        guard callMonitor == nil, let application = selectedApplication else { return }
 
-        do {
-            try prepareOutputDirectory()
-            let watcher = CallRecordingWatcher(
-                application: application,
-                outputDirectory: outputDirectory,
-                recordingConfiguration: recordingConfiguration,
-                endDelay: callEndDelay
-            )
-            let events = try await watcher.start()
-            guard !Task.isCancelled else {
-                _ = await watcher.stop()
-                activity = .idle
-                return
+        let monitor = CallActivityMonitor(
+            targetBundleID: application.bundleIdentifier
+        )
+        callMonitor = monitor
+        monitoredApplicationName = application.name
+        isCallActive = false
+        isCallMonitoring = true
+        if activity == .idle {
+            statusMessage = "正在监听 \(application.name) 的通话活动"
+        }
+
+        monitor.start()
+        callMonitorTask = Task { [weak self, monitor] in
+            for await active in monitor.activityEvents() {
+                guard !Task.isCancelled else { break }
+                self?.handleCallActivity(active)
             }
-            self.watcher = watcher
-            activity = .listening
-            statusMessage = "正在监听 \(application.name) 的通话"
-            watcherTask = Task { [weak self] in
-                for await event in events {
-                    guard !Task.isCancelled else { break }
-                    self?.handle(event)
-                }
-            }
-        } catch {
-            activity = .idle
-            present(error)
         }
     }
 
-    private func stopWatching() async {
-        guard let watcher else { return }
-        self.watcher = nil
-        watcherTask?.cancel()
-        watcherTask = nil
-        activity = .stopping
-        statusMessage = "正在停止监听…"
+    @discardableResult
+    private func stopCallMonitoring() -> Task<Void, Never>? {
+        guard let monitor = callMonitor else { return nil }
+        callMonitor = nil
+        let task = callMonitorTask
+        callMonitorTask = nil
+        task?.cancel()
+        monitor.stop()
 
-        if let result = await watcher.stop() {
-            apply(result)
-        } else {
-            statusMessage = "已停止监听"
+        isCallMonitoring = false
+        isCallActive = false
+        monitoredApplicationName = nil
+        callReminderMessage = nil
+        if activity == .idle {
+            statusMessage = "通话提醒已关闭"
         }
-        activity = .idle
-        recordingStartedAt = nil
+        return task
     }
 
-    private func handle(_ event: CallRecordingEvent) {
-        guard watcher != nil else { return }
-        switch event {
-        case .started:
-            recordingStartedAt = Date()
-            activity = .recording
-            statusMessage = "检测到通话，正在录制"
-        case .finished(let result):
-            apply(result)
-            recordingStartedAt = nil
-            activity = .listening
-            if result.outputURL != nil {
-                statusMessage = "通话已保存，继续监听"
-            }
-        case .warning(let message):
-            errorMessage = message
-        case .failed(let message):
-            errorMessage = message
-            recordingStartedAt = nil
-            activity = .listening
-            statusMessage = "录制中断，继续监听"
+    func handleCallActivity(_ active: Bool) {
+        guard isCallMonitoring else { return }
+        if active {
+            guard !isCallActive else { return }
+            isCallActive = true
+            guard !isRecordingOperationActive else { return }
+
+            let applicationName = monitoredApplicationName ?? "目标 app"
+            callReminderMessage = "检测到 \(applicationName) 同时使用音频输入与输出，是否开始录制？"
+            statusMessage = "检测到疑似通话，等待手动录制"
+            notifyCallDetected()
+            return
+        }
+
+        isCallActive = false
+        callReminderMessage = nil
+        if activity == .idle, let applicationName = monitoredApplicationName {
+            statusMessage = "正在监听 \(applicationName) 的通话活动"
         }
     }
 
     private func apply(_ result: RecordingResult) {
+        let monitoringSuffix = isCallMonitoring ? "，继续监听" : ""
         if let outputURL = result.outputURL {
             latestOutputURL = outputURL
             statusMessage = String(
-                format: "已保存 %.1f 秒录音",
-                result.recordedSeconds
+                format: "已保存 %.1f 秒录音%@",
+                result.recordedSeconds,
+                monitoringSuffix
             )
         } else {
-            statusMessage = "录音未能保存"
+            statusMessage = "录音未能保存\(monitoringSuffix)"
         }
         if let warning = result.warning {
             errorMessage = warning
@@ -353,7 +367,6 @@ final class RecorderModel {
     private enum Activity {
         case idle
         case preparing
-        case listening
         case recording
         case stopping
     }

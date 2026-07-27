@@ -88,19 +88,6 @@ enum Recorder {
         }
     }
 
-    static func runningApplication(
-        bundleIdentifier: String
-    ) async throws -> CapturableApplication {
-        let app = try await ContentResolver.findApp(
-            bundleIdentifier: bundleIdentifier
-        )
-        return CapturableApplication(
-            name: app.applicationName,
-            bundleIdentifier: app.bundleIdentifier,
-            processID: app.processID
-        )
-    }
-
     static func startRecording(
         application: CapturableApplication,
         outputURL: URL,

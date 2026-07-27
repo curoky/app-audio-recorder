@@ -8,11 +8,9 @@
 录制指定 app 的系统输出，可选同时录制麦克风；两路音频以独立 ALAC 音轨写入同一个
 `.m4a` 容器。微信、Signal、WhatsApp、Telegram 已适配主进程及 helper/扩展进程。
 
-App 提供两种模式：
-
-- **手动录制**：用户选择目标 app、输出目录、采样率、声道和麦克风开关。
-- **自动监听**：每 3 秒轮询目标 app 家族的音频输入与输出活动，两者同时存在时开始录制；
-  活动结束达到所选时长后保存。此模式始终录制 app 与麦克风双轨。
+App 只进行手动录制：用户选择目标 app、输出目录、采样率、声道和麦克风开关后开始录制。
+可独立开启通话提醒；它每 3 秒轮询目标 app 家族的音频输入与输出活动，两者同时存在时
+播放提示音并显示确认框，由用户决定是否开始录制。每段连续活动只提醒一次。
 
 需要混音时，用 `task merge` 调用固定路径 `/opt/sb/bin/ffmpeg` 离线生成 WAV。
 混音逻辑不进入 Swift 产物。
@@ -56,13 +54,13 @@ task clean
 
 - 采样率：8、16、24、32、44.1、48 kHz，默认 48 kHz。
 - 声道：单声道、立体声，默认立体声。
-- 麦克风：手动模式可关闭，默认开启；自动监听固定开启。
-- 自动监听结束判定：静默 0、0.5、1、2、3、5 秒，默认 2 秒。
+- 麦克风：可关闭，默认开启。
+- 通话提醒：默认关闭，开启后锁定目标 App；录制参数仍可在录制开始前修改。
 
 目标 App 选择器支持按名称或 bundle ID 搜索；普通 App 默认展示，后台进程折叠展示，
 已适配通话 App 置顶，并记住用户上次选择。
 
-录制期间禁止修改模式、目标、目录及录制参数，避免当前 session 的配置发生漂移。
+录制期间禁止修改目标、目录及录制参数，避免当前 session 的配置发生漂移。
 
 ## 输出
 
@@ -87,7 +85,7 @@ task merge GAIN=0.5 -- recording.m4a
 ## 权限
 
 - **屏幕录制**：ScreenCaptureKit 捕获 app 音频所需。
-- **麦克风**：手动启用麦克风或使用自动监听时所需。
+- **麦克风**：启用麦克风录制时所需；通话提醒读取 CoreAudio 活动，不申请麦克风权限。
 
 权限主体是签名后的 `App Audio Recorder.app`。改动签名身份可能让 TCC 将其视为新的 App；
 开发中需要稳定权限时使用同一 Apple Development 证书。
@@ -101,13 +99,12 @@ task merge GAIN=0.5 -- recording.m4a
 | `RecorderApp.swift` | SwiftUI 入口与退出前异步收尾 |
 | `RecorderView.swift` | 单窗口界面与录制参数控件 |
 | `ApplicationPicker.swift` | 可搜索、按普通 App 与后台进程分组的目标选择控件 |
-| `RecorderModel.swift` | 主线程 UI 状态、手动录制和自动监听编排 |
-| `RecordingConfiguration.swift` | 类型安全的录制与监听选项 |
+| `RecorderModel.swift` | 主线程 UI 状态、手动录制和通话提醒编排 |
+| `RecordingConfiguration.swift` | 类型安全的录制选项 |
 | `Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
 | `ContentResolver.swift` | 枚举运行中 app、重新解析所选进程、构建捕获过滤器 |
 | `CallApplication.swift` | 通话 app 目录与主进程/helper 归属规则 |
-| `CallRecordingWatcher.swift` | 通话活动到录制 session 的生命周期及限速故障重试 |
-| `CallActivityMonitor.swift` | CoreAudio 输入/输出活动轮询与结束去抖 |
+| `CallActivityMonitor.swift` | CoreAudio 输入/输出活动轮询及通话提醒去重 |
 | `AudioCaptureEngine.swift` | SCStream 生命周期与 app/mic 样本分发 |
 | `AudioContainerWriter.swift` | AVAssetWriter 多轨 ALAC 写入及 PTS 对齐 |
 | `RecordingFiles.swift` | 输出目录校验、唯一文件名 |
@@ -125,11 +122,9 @@ task merge GAIN=0.5 -- recording.m4a
 - `stop()` 先停止 SCStream，再在 `sampleQueue` 同步调用 `finalizeInputs()`，最后在队列外
   `await completeWriting()`。即使停止捕获失败，也必须继续容器收尾。
 - `RecordingSession.stop()` 必须保持幂等，GUI 主操作、捕获失败和 App 退出可能并发请求停止。
-- 关闭最后一个窗口或 Cmd-Q 时，`RecorderModel.shutdown()` 必须等待启动任务结束，并完成当前
-  session 或 watcher 的收尾，不能直接取消 AVAssetWriter。
-- 自动监听停止时必须等待 monitor task 退场，确保 `stop()` 返回后不会再创建 writer。
-- 自动录制的可恢复故障最多在 30 秒内重试 3 次；停止监听时必须同时等待 monitor task
-  和正在执行的 retry task 退场。
+- 关闭最后一个窗口或 Cmd-Q 时，`RecorderModel.shutdown()` 必须等待启动任务结束，完成当前
+  session 的收尾并停止通话监听，不能直接取消 AVAssetWriter。
+- 通话监听与录制 session 相互独立；监听只更新提醒状态，不得创建或停止 writer。
 
 ## 测试
 
@@ -137,7 +132,7 @@ task merge GAIN=0.5 -- recording.m4a
 
 - 多轨写入、首帧与中途 PTS 对齐、尾部补齐、迟到音轨、文件保护和取消清理。
 - 唯一文件名与输出目录校验。
-- 通话 app/helper 匹配、输入/输出活动判定和重试预算。
+- 通话 app/helper 匹配、输入/输出活动判定及每段通话只提醒一次。
 - 磁盘水位策略、`RecordingSession.stop()` 并发幂等性及无效输出抑制。
 - GUI 默认配置和操作任务退出状态。
 

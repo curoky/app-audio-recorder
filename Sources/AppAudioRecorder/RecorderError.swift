@@ -10,17 +10,6 @@ enum RecorderError: LocalizedError, Sendable {
     case audioCaptureFailed
     case insufficientDiskSpace(availableBytes: Int64)
     case outputNotWritable(path: String)
-    case operationAlreadyRunning
-
-    var isRetryableCaptureFailure: Bool {
-        switch self {
-        case .applicationNotRunning, .noAppsAvailable, .audioCaptureFailed:
-            true
-        case .screenRecordingPermissionDenied, .microphonePermissionDenied,
-            .insufficientDiskSpace, .outputNotWritable, .operationAlreadyRunning:
-            false
-        }
-    }
 
     var errorDescription: String? {
         switch self {
@@ -45,8 +34,6 @@ enum RecorderError: LocalizedError, Sendable {
             return "磁盘可用空间不足（剩余 \(megabytes) MB），无法继续录制。"
         case .outputNotWritable(let path):
             return "输出路径不可写：\(path)"
-        case .operationAlreadyRunning:
-            return "当前操作已在运行。"
         }
     }
 }

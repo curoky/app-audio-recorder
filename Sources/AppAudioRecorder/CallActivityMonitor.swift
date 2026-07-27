@@ -8,16 +8,16 @@ struct ProcessAudioActivity: Equatable {
     let usesOutput: Bool
 }
 
-/// 每三秒轮询目标 app 家族的 CoreAudio 进程活动，并把通话状态输出为去抖后的事件流。
+/// 每三秒轮询目标 app 家族的 CoreAudio 进程活动，并输出去抖后的疑似通话状态。
 ///
 /// 输入与输出可以由同一 app 的不同 helper 进程承载，因此按 bundle family 聚合：
 /// 家族内至少一路输入且至少一路输出同时活动时才视为通话。
 final class CallActivityMonitor: @unchecked Sendable {
     private static let pollingInterval: TimeInterval = 3
+    private static let endDelay: TimeInterval = 2
 
     private let queue = DispatchQueue(label: "app-audio-recorder.call-monitor")
     private let targetBundleMatcher: ApplicationBundleMatcher
-    private let endDelay: CallEndDelay
     private let logger = AppLog.logger("call-monitor")
     private let events: AsyncStream<Bool>
     private let continuation: AsyncStream<Bool>.Continuation
@@ -27,11 +27,10 @@ final class CallActivityMonitor: @unchecked Sendable {
     private var callActive = false
     private var pendingStop: DispatchWorkItem?
 
-    init(targetBundleID: String, endDelay: CallEndDelay) {
+    init(targetBundleID: String) {
         targetBundleMatcher = ApplicationBundleMatcher(
             targetBundleIdentifier: targetBundleID
         )
-        self.endDelay = endDelay
         (events, continuation) = AsyncStream.makeStream(
             bufferingPolicy: .unbounded
         )
@@ -101,7 +100,7 @@ final class CallActivityMonitor: @unchecked Sendable {
             continuation.yield(false)
         }
         pendingStop = work
-        queue.asyncAfter(deadline: .now() + endDelay.rawValue, execute: work)
+        queue.asyncAfter(deadline: .now() + Self.endDelay, execute: work)
     }
 
     // MARK: - CoreAudio 读取辅助

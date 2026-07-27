@@ -17,12 +17,3 @@ struct RecordingConfiguration: Equatable, Sendable {
     var channelCount: ChannelCount = .stereo
     var capturesMicrophone = true
 }
-
-enum CallEndDelay: Double, CaseIterable, Hashable, Sendable {
-    case immediate = 0
-    case halfSecond = 0.5
-    case oneSecond = 1
-    case twoSeconds = 2
-    case threeSeconds = 3
-    case fiveSeconds = 5
-}

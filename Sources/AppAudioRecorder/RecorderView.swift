@@ -7,14 +7,6 @@ struct RecorderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Picker("模式", selection: $model.mode) {
-                ForEach(RecorderMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .disabled(model.isActive)
-
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
                 GridRow {
                     Text("目标 App")
@@ -61,7 +53,9 @@ struct RecorderView: View {
                                     )
                                 }
                             }
-                            .disabled(model.isActive || model.applications.isEmpty)
+                            .disabled(
+                                model.isTargetSelectionLocked || model.applications.isEmpty
+                            )
                             .help("选择目标 App")
 
                             Button {
@@ -70,7 +64,7 @@ struct RecorderView: View {
                                 Image(systemName: "arrow.clockwise")
                             }
                             .help("刷新运行中的 app")
-                            .disabled(model.isActive || model.isRefreshing)
+                            .disabled(model.isTargetSelectionLocked || model.isRefreshing)
                         }
 
                         if let application = model.selectedApplication {
@@ -93,6 +87,20 @@ struct RecorderView: View {
                 }
 
                 GridRow {
+                    Text("通话提醒")
+                    Toggle(
+                        "检测到疑似通话时提醒",
+                        isOn: Binding(
+                            get: { model.isCallMonitoring },
+                            set: { model.setCallMonitoringEnabled($0) }
+                        )
+                    )
+                    .disabled(
+                        model.selectedApplication == nil && !model.isCallMonitoring
+                    )
+                }
+
+                GridRow {
                     Text("保存到")
                     HStack {
                         Text(model.outputDirectory.path)
@@ -103,7 +111,7 @@ struct RecorderView: View {
                         Button("选择…") {
                             model.chooseOutputDirectory()
                         }
-                        .disabled(model.isActive)
+                        .disabled(model.isRecordingConfigurationLocked)
                     }
                 }
 
@@ -111,17 +119,9 @@ struct RecorderView: View {
                     Text("麦克风")
                     Toggle(
                         "同时录制麦克风",
-                        isOn: Binding(
-                            get: {
-                                model.mode == .automatic
-                                    || model.recordingConfiguration.capturesMicrophone
-                            },
-                            set: {
-                                model.recordingConfiguration.capturesMicrophone = $0
-                            }
-                        )
+                        isOn: $model.recordingConfiguration.capturesMicrophone
                     )
-                    .disabled(model.isActive || model.mode == .automatic)
+                    .disabled(model.isRecordingConfigurationLocked)
                 }
 
                 GridRow {
@@ -138,7 +138,7 @@ struct RecorderView: View {
                         }
                     }
                     .labelsHidden()
-                    .disabled(model.isActive)
+                    .disabled(model.isRecordingConfigurationLocked)
                 }
 
                 GridRow {
@@ -156,34 +156,23 @@ struct RecorderView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .disabled(model.isActive)
-                }
-
-                if model.mode == .automatic {
-                    GridRow {
-                        Text("结束判定")
-                        Picker("", selection: $model.callEndDelay) {
-                            ForEach(CallEndDelay.allCases, id: \.self) { delay in
-                                Text(callEndDelayTitle(delay)).tag(delay)
-                            }
-                        }
-                        .labelsHidden()
-                        .disabled(model.isActive)
-                    }
+                    .disabled(model.isRecordingConfigurationLocked)
                 }
             }
 
-            if model.mode == .automatic {
-                Text("自动监听以目标 app 同时使用音频输入与输出作为通话信号，并始终录制 app 与麦克风双轨。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("通话提醒每 3 秒检查目标 app 家族的音频输入与输出；检测到疑似通话后由你确认是否开始录制。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             Divider()
 
             HStack(spacing: 10) {
                 Circle()
-                    .fill(model.isRecording ? Color.red : Color.secondary)
+                    .fill(
+                        model.isRecording
+                            ? Color.red
+                            : model.isCallMonitoring ? Color.orange : Color.secondary
+                    )
                     .frame(width: 9, height: 9)
                 Text(model.statusMessage)
                 Spacer()
@@ -220,6 +209,22 @@ struct RecorderView: View {
         .frame(width: 500)
         .task {
             await model.refreshApplications()
+        }
+        .alert(
+            "检测到疑似通话",
+            isPresented: Binding(
+                get: { model.callReminderMessage != nil },
+                set: { if !$0 { model.dismissCallReminder() } }
+            )
+        ) {
+            Button("开始录制") {
+                model.startRecordingFromReminder()
+            }
+            Button("忽略", role: .cancel) {
+                model.dismissCallReminder()
+            }
+        } message: {
+            Text(model.callReminderMessage ?? "")
         }
         .alert(
             "操作失败",
@@ -266,12 +271,4 @@ struct RecorderView: View {
         }
     }
 
-    private func callEndDelayTitle(_ delay: CallEndDelay) -> String {
-        switch delay {
-        case .immediate:
-            "立即"
-        default:
-            String(format: "%g 秒静默", delay.rawValue)
-        }
-    }
 }
