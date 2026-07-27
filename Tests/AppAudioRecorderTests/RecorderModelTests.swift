@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 final class RecorderModelTests: XCTestCase {
+    func testSelectedApplicationPersists() {
+        let suiteName = "RecorderModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let firstModel = RecorderModel(defaults: defaults)
+        firstModel.selectApplication(bundleIdentifier: "com.example.Audio")
+
+        let restoredModel = RecorderModel(defaults: defaults)
+        XCTAssertEqual(
+            restoredModel.selectedBundleIdentifier,
+            "com.example.Audio"
+        )
+    }
+
     func testDefaultRecordingConfiguration() {
         let model = RecorderModel()
 

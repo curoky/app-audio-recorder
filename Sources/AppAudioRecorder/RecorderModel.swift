@@ -14,7 +14,7 @@ enum RecorderMode: String, CaseIterable, Identifiable {
 final class RecorderModel {
     var mode = RecorderMode.manual
     var applications: [CapturableApplication] = []
-    var selectedBundleIdentifier: String?
+    private(set) var selectedBundleIdentifier: String?
     var recordingConfiguration = RecordingConfiguration()
     var callEndDelay = CallEndDelay.twoSeconds
     var outputDirectory: URL
@@ -30,11 +30,16 @@ final class RecorderModel {
     @ObservationIgnored private var failureTask: Task<Void, Never>?
     @ObservationIgnored private var watcherTask: Task<Void, Never>?
     @ObservationIgnored private var operationTask: Task<Void, Never>?
+    @ObservationIgnored private let defaults: UserDefaults
     private var activity = Activity.idle
 
     private static let outputDirectoryKey = "outputDirectory"
+    private static let selectedBundleIdentifierKey = "selectedBundleIdentifier"
 
     init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        selectedBundleIdentifier = defaults.string(forKey: Self.selectedBundleIdentifierKey)
+
         if let saved = defaults.string(forKey: Self.outputDirectoryKey) {
             outputDirectory = URL(fileURLWithPath: saved, isDirectory: true)
         } else {
@@ -80,6 +85,11 @@ final class RecorderModel {
         !isTransitioning && (isActive || selectedApplication != nil)
     }
 
+    func selectApplication(bundleIdentifier: String) {
+        selectedBundleIdentifier = bundleIdentifier
+        defaults.set(bundleIdentifier, forKey: Self.selectedBundleIdentifierKey)
+    }
+
     func refreshApplications() async {
         guard !isActive else { return }
         isRefreshing = true
@@ -88,7 +98,18 @@ final class RecorderModel {
         do {
             let loaded = try await Recorder.applications()
             applications = loaded
-            if !loaded.contains(where: { $0.bundleIdentifier == selectedBundleIdentifier }) {
+            let preferredBundleIdentifier = defaults.string(
+                forKey: Self.selectedBundleIdentifierKey
+            )
+            if let preferredBundleIdentifier,
+                loaded.contains(where: {
+                    $0.bundleIdentifier == preferredBundleIdentifier
+                })
+            {
+                selectedBundleIdentifier = preferredBundleIdentifier
+            } else if !loaded.contains(where: {
+                $0.bundleIdentifier == selectedBundleIdentifier
+            }) {
                 selectedBundleIdentifier =
                     loaded.first(where: {
                         $0.bundleIdentifier
@@ -120,7 +141,7 @@ final class RecorderModel {
 
         guard panel.runModal() == .OK, let selected = panel.url else { return }
         outputDirectory = selected
-        UserDefaults.standard.set(selected.path, forKey: Self.outputDirectoryKey)
+        defaults.set(selected.path, forKey: Self.outputDirectoryKey)
     }
 
     func triggerPrimaryAction() {

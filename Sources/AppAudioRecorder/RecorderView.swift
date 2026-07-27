@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RecorderView: View {
     @Bindable var model: RecorderModel
+    @State private var isApplicationPickerPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -19,17 +20,49 @@ struct RecorderView: View {
                     Text("目标 App")
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Picker("", selection: $model.selectedBundleIdentifier) {
-                                if model.applications.isEmpty {
-                                    Text("没有可用的 app").tag(nil as String?)
-                                }
-                                ForEach(model.applications) { application in
-                                    Text(applicationPickerTitle(application))
-                                        .tag(application.bundleIdentifier as String?)
+                            Button {
+                                isApplicationPickerPresented = true
+                            } label: {
+                                HStack(spacing: 8) {
+                                    if let application = model.selectedApplication {
+                                        if let icon = NSRunningApplication(
+                                            processIdentifier: application.processID
+                                        )?.icon {
+                                            Image(nsImage: icon)
+                                                .resizable()
+                                                .frame(width: 18, height: 18)
+                                        }
+                                        Text(application.name)
+                                            .lineLimit(1)
+                                    } else {
+                                        Image(systemName: "app")
+                                            .foregroundStyle(.secondary)
+                                        Text("没有可用的 App")
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
                                 }
                             }
-                            .labelsHidden()
-                            .disabled(model.isActive)
+                            .buttonStyle(.bordered)
+                            .frame(maxWidth: .infinity)
+                            .popover(
+                                isPresented: $isApplicationPickerPresented
+                            ) {
+                                ApplicationPicker(
+                                    applications: model.applications,
+                                    selectedBundleIdentifier:
+                                        model.selectedBundleIdentifier
+                                ) {
+                                    model.selectApplication(
+                                        bundleIdentifier: $0
+                                    )
+                                }
+                            }
+                            .disabled(model.isActive || model.applications.isEmpty)
+                            .help("选择目标 App")
 
                             Button {
                                 Task { await model.refreshApplications() }
@@ -42,13 +75,6 @@ struct RecorderView: View {
 
                         if let application = model.selectedApplication {
                             HStack(spacing: 6) {
-                                if let icon = NSRunningApplication(
-                                    processIdentifier: application.processID
-                                )?.icon {
-                                    Image(nsImage: icon)
-                                        .resizable()
-                                        .frame(width: 16, height: 16)
-                                }
                                 Text(application.bundleIdentifier)
                                     .monospaced()
                                 Text("PID \(application.processID)")
@@ -218,19 +244,6 @@ struct RecorderView: View {
             (seconds / 60) % 60,
             seconds % 60
         )
-    }
-
-    private func applicationPickerTitle(_ application: CapturableApplication) -> String {
-        if let callApplication = application.callApplication {
-            return "\(application.name)（\(callApplication.displayName)，通话监听已适配）"
-        }
-
-        let hasSameName = model.applications.contains {
-            $0.id != application.id
-                && $0.name.localizedCaseInsensitiveCompare(application.name) == .orderedSame
-        }
-        guard hasSameName else { return application.name }
-        return "\(application.name)（\(application.bundleIdentifier)，PID \(application.processID)）"
     }
 
     private func sampleRateTitle(

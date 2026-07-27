@@ -22,11 +22,14 @@ App 提供两种模式：
 - Swift 6.2，Swift 6 language mode，strict concurrency complete。
 - macOS 26+，SwiftUI、Observation、ScreenCaptureKit、AVFoundation、CoreAudio、OSLog。
 - SwiftPM 单一 executable target：`AppAudioRecorder`。
-- 无第三方 Swift 依赖。
 - `.app` bundle ID：`com.local.AppAudioRecorder`。
 
 不要无声升级 Swift、macOS deployment target 或工具链。项目当前没有 lint/format 配置，
 沿用现有风格，不擅自引入新工具。
+
+允许引入第三方 Swift 依赖，但依赖必须成熟、持续维护、支持 SwiftPM，并兼容 Swift 6
+strict concurrency 与 macOS 26。仅在依赖能够大幅减少自研代码、显著降低复杂度或维护成本
+时引入；不为少量语法便利、假想需求或简单薄封装增加依赖。
 
 ## 常用命令
 
@@ -55,6 +58,9 @@ task clean
 - 声道：单声道、立体声，默认立体声。
 - 麦克风：手动模式可关闭，默认开启；自动监听固定开启。
 - 自动监听结束判定：静默 0、0.5、1、2、3、5 秒，默认 2 秒。
+
+目标 App 选择器支持按名称或 bundle ID 搜索；普通 App 默认展示，后台进程折叠展示，
+已适配通话 App 置顶，并记住用户上次选择。
 
 录制期间禁止修改模式、目标、目录及录制参数，避免当前 session 的配置发生漂移。
 
@@ -90,6 +96,7 @@ task merge GAIN=0.5 -- recording.m4a
 | --- | --- |
 | `RecorderApp.swift` | SwiftUI 入口与退出前异步收尾 |
 | `RecorderView.swift` | 单窗口界面与录制参数控件 |
+| `ApplicationPicker.swift` | 可搜索、按普通 App 与后台进程分组的目标选择控件 |
 | `RecorderModel.swift` | 主线程 UI 状态、手动录制和自动监听编排 |
 | `RecordingConfiguration.swift` | 类型安全的录制与监听选项 |
 | `Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
