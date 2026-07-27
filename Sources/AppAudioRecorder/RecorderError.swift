@@ -8,8 +8,8 @@ enum RecorderError: LocalizedError {
     case appNotFound(query: String)
     case noAppsAvailable
     case audioCaptureFailed
-    case audioConversionFailed
     case audioMergeFailed
+    case mergeToolUnavailable
     case inputNotReadable(path: String)
     case outputNotWritable(path: String)
     case outputConflictsWithInput(path: String)
@@ -33,10 +33,13 @@ enum RecorderError: LocalizedError {
             "当前没有可捕获音频的运行中 app。"
         case .audioCaptureFailed:
             "音频捕获意外停止，已保存停止前成功写入的内容。"
-        case .audioConversionFailed:
-            "音频格式转换失败。"
         case .audioMergeFailed:
             "合并 app 音频与麦克风音轨失败。"
+        case .mergeToolUnavailable:
+            """
+            未找到 ffmpeg，无法执行合并。
+            请先安装（如 `brew install ffmpeg`）并确保它在 PATH 中，然后重新运行。
+            """
         case let .inputNotReadable(path):
             "输入文件不存在或不可读：\(path)"
         case let .outputNotWritable(path):

@@ -134,7 +134,7 @@ struct RecordCommand: AsyncParsableCommand {
                 : expanded
         }
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.dateFormat = "yyyy-MM-dd-HHmmss"
         let safeName = appName.replacingOccurrences(of: "/", with: "-")
         let name = "\(safeName)-\(formatter.string(from: Date()))"
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

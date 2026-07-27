@@ -46,14 +46,8 @@ struct MergeCommand: AsyncParsableCommand {
         print("输出文件 : \(outputURL.path)")
         print("混音增益 : \(gain)")
         print("正在合并音轨…")
-        try await mergeTracks(appURL: appURL, micURL: micURL, mergedURL: outputURL)
+        try await FFmpegMerger.merge(appURL: appURL, micURL: micURL, outputURL: outputURL, gain: gain)
         print("已保存：\(outputURL.path)")
-    }
-
-    /// 离线合并是 CPU 密集的纯计算，放到并发线程池，不占用协作线程池。
-    @concurrent
-    private func mergeTracks(appURL: URL, micURL: URL, mergedURL: URL) async throws {
-        try AudioMerger.merge(appURL: appURL, micURL: micURL, outputURL: mergedURL, gain: gain)
     }
 
     /// 输出路径：用户指定则用之，否则在第一路输入同目录生成 `<去掉-app 后缀的基名>-merged.wav`。
