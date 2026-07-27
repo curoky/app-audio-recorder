@@ -18,26 +18,52 @@ struct RecorderView: View {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 14) {
                 GridRow {
                     Text("目标 App")
-                    HStack {
-                        Picker("", selection: $model.selectedBundleIdentifier) {
-                            if model.applications.isEmpty {
-                                Text("没有可用的 app").tag(nil as String?)
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Picker("", selection: $model.selectedBundleIdentifier) {
+                                if model.applications.isEmpty {
+                                    Text("没有可用的 app").tag(nil as String?)
+                                }
+                                ForEach(model.applications) { application in
+                                    Text(applicationPickerTitle(application))
+                                        .tag(application.bundleIdentifier as String?)
+                                }
                             }
-                            ForEach(model.applications) { application in
-                                Text(application.name)
-                                    .tag(application.bundleIdentifier as String?)
-                            }
-                        }
-                        .labelsHidden()
-                        .disabled(model.isActive)
+                            .labelsHidden()
+                            .disabled(model.isActive)
 
-                        Button {
-                            Task { await model.refreshApplications() }
-                        } label: {
-                            Image(systemName: "arrow.clockwise")
+                            Button {
+                                Task { await model.refreshApplications() }
+                            } label: {
+                                Image(systemName: "arrow.clockwise")
+                            }
+                            .help("刷新运行中的 app")
+                            .disabled(model.isActive || model.isRefreshing)
                         }
-                        .help("刷新运行中的 app")
-                        .disabled(model.isActive || model.isRefreshing)
+
+                        if let application = model.selectedApplication {
+                            HStack(spacing: 6) {
+                                if let icon = NSRunningApplication(
+                                    processIdentifier: application.processID
+                                )?.icon {
+                                    Image(nsImage: icon)
+                                        .resizable()
+                                        .frame(width: 16, height: 16)
+                                }
+                                Text(application.bundleIdentifier)
+                                    .monospaced()
+                                Text("PID \(application.processID)")
+                                    .monospacedDigit()
+                                if isDefaultWeChat(application) {
+                                    Text("微信主程序 · 推荐")
+                                        .fontWeight(.medium)
+                                        .foregroundStyle(.tint)
+                                }
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        }
                     }
                 }
 
@@ -142,5 +168,22 @@ struct RecorderView: View {
             (seconds / 60) % 60,
             seconds % 60
         )
+    }
+
+    private func applicationPickerTitle(_ application: CapturableApplication) -> String {
+        if isDefaultWeChat(application) {
+            return "\(application.name)（微信主程序，推荐）"
+        }
+
+        let hasSameName = model.applications.contains {
+            $0.id != application.id
+                && $0.name.localizedCaseInsensitiveCompare(application.name) == .orderedSame
+        }
+        guard hasSameName else { return application.name }
+        return "\(application.name)（\(application.bundleIdentifier)，PID \(application.processID)）"
+    }
+
+    private func isDefaultWeChat(_ application: CapturableApplication) -> Bool {
+        application.bundleIdentifier == Recorder.defaultBundleIdentifier
     }
 }
