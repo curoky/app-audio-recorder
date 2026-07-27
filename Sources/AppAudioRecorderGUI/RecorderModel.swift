@@ -94,6 +94,7 @@ final class RecorderModel {
                     loaded.first(where: {
                         $0.bundleIdentifier == Recorder.defaultBundleIdentifier
                     })?.bundleIdentifier
+                    ?? loaded.first(where: { $0.callApplication != nil })?.bundleIdentifier
                     ?? loaded.first?.bundleIdentifier
             }
             statusMessage = loaded.isEmpty

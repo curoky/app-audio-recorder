@@ -54,8 +54,8 @@ struct RecorderView: View {
                                     .monospaced()
                                 Text("PID \(application.processID)")
                                     .monospacedDigit()
-                                if isDefaultWeChat(application) {
-                                    Text("微信主程序 · 推荐")
+                                if let callApplication = application.callApplication {
+                                    Text("\(callApplication.displayName) · 通话监听已适配")
                                         .fontWeight(.medium)
                                         .foregroundStyle(.tint)
                                 }
@@ -171,8 +171,8 @@ struct RecorderView: View {
     }
 
     private func applicationPickerTitle(_ application: CapturableApplication) -> String {
-        if isDefaultWeChat(application) {
-            return "\(application.name)（微信主程序，推荐）"
+        if let callApplication = application.callApplication {
+            return "\(application.name)（\(callApplication.displayName)，通话监听已适配）"
         }
 
         let hasSameName = model.applications.contains {
@@ -181,9 +181,5 @@ struct RecorderView: View {
         }
         guard hasSameName else { return application.name }
         return "\(application.name)（\(application.bundleIdentifier)，PID \(application.processID)）"
-    }
-
-    private func isDefaultWeChat(_ application: CapturableApplication) -> Bool {
-        application.bundleIdentifier == Recorder.defaultBundleIdentifier
     }
 }

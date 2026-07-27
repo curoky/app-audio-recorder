@@ -8,9 +8,9 @@ import Logging
 ///
 /// 依据 CoreAudio 的进程音频对象 API（macOS 14.4+）：每个正在用音频的进程暴露为一个
 /// `AudioObjectID`，其 `kAudioProcessPropertyIsRunningInput` 表示该进程此刻是否在采集输入。
-/// 通过进程对象的 PID 反查 `NSRunningApplication` 的 bundleId 来匹配目标 app（从而无需读取
-/// CoreAudio 的 CFString 属性，也天然跟随目标 app 重启后的新 PID）；同时监听进程对象**列表**
-/// 变化，以捕获通话开始时才出现的进程对象。读取这些元数据不需要任何额外权限。
+/// 通过进程对象的 PID 反查 `NSRunningApplication` 的 bundleId 来匹配目标 app 及其已知 helper
+/// （从而无需读取 CoreAudio 的 CFString 属性，也天然跟随目标 app 重启后的新 PID）；同时监听
+/// 进程对象**列表**变化，以捕获通话开始时才出现的进程对象。读取这些元数据不需要任何额外权限。
 ///
 /// 并发模型：所有可变状态与 CoreAudio 监听回调都固定在串行队列 `queue` 上访问/触发
 /// （`AudioObjectAddPropertyListenerBlock` 注册到该队列）。因此 `@unchecked Sendable` 是桥接
@@ -18,7 +18,7 @@ import Logging
 /// 显式移除来打破环——`watch` 命令在 `defer` 里保证调用。
 final class CallActivityMonitor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app-audio-recorder.call-monitor")
-    private let targetBundleID: String
+    private let targetBundleMatcher: ApplicationBundleMatcher
     /// 麦克风静默多久后才判定通话结束（去抖窗口，秒）。
     private let silenceSeconds: Double
     private let logger: Logger
@@ -35,7 +35,9 @@ final class CallActivityMonitor: @unchecked Sendable {
     private var pendingStop: DispatchWorkItem?
 
     init(targetBundleID: String, silenceSeconds: Double, logger: Logger) {
-        self.targetBundleID = targetBundleID
+        self.targetBundleMatcher = ApplicationBundleMatcher(
+            targetBundleIdentifier: targetBundleID
+        )
         self.silenceSeconds = silenceSeconds
         self.logger = logger
         // 布尔事件极小且低频，用 unbounded 保证不丢失任何一次翻转。
@@ -168,7 +170,7 @@ final class CallActivityMonitor: @unchecked Sendable {
         )
     }
 
-    /// 当前进程音频对象中，PID 反查 bundleId 命中目标 app 的那些。
+    /// 当前进程音频对象中，PID 反查 bundleId 命中目标 app 家族的那些。
     private func matchedProcessObjects() -> [AudioObjectID] {
         var address = Self.address(kAudioHardwarePropertyProcessObjectList)
         let systemObject = AudioObjectID(kAudioObjectSystemObject)
@@ -189,7 +191,7 @@ final class CallActivityMonitor: @unchecked Sendable {
         guard let pid = processPID(objectID),
               let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
         else { return false }
-        return bundleID == targetBundleID
+        return targetBundleMatcher.matches(bundleID)
     }
 
     private func processPID(_ objectID: AudioObjectID) -> pid_t? {

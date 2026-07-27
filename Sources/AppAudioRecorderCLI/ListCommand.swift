@@ -23,7 +23,7 @@ struct ListCommand: AsyncParsableCommand {
         // app 列表是可被管道消费的数据，走 stdout；上面的状态提示走 logger（stderr）。
         print(String(repeating: "-", count: 60))
         for app in apps {
-            let marker = app.bundleIdentifier == Recorder.defaultBundleIdentifier ? " ← 微信" : ""
+            let marker = app.callApplication.map { " ← \($0.displayName)（通话监听已适配）" } ?? ""
             print("  \(app.name)\(marker)")
             print("      bundleId: \(app.bundleIdentifier)   pid: \(app.processID)")
         }

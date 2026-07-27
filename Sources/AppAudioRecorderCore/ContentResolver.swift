@@ -3,9 +3,6 @@ import ScreenCaptureKit
 
 /// 封装 ScreenCaptureKit 的可共享内容查询与按 app 过滤器构建。
 enum ContentResolver {
-    /// 已知的微信 bundle identifier（macOS 版微信）。
-    static let wechatBundleID = "com.tencent.xinWeChat"
-
     /// 获取可共享内容；把权限相关错误统一转成友好错误。
     static func shareableContent() async throws(RecorderError) -> SCShareableContent {
         do {
@@ -23,11 +20,30 @@ enum ContentResolver {
     /// 列出可捕获音频的运行中 app（按名称排序、去重）。
     static func runningApps() async throws(RecorderError) -> [SCRunningApplication] {
         let content = try await shareableContent()
-        var seen = Set<String>()
-        return content.applications
+        let applications = content.applications
             .filter { !$0.applicationName.isEmpty && !$0.bundleIdentifier.isEmpty }
-            .filter { seen.insert($0.bundleIdentifier).inserted }
-            .sorted { $0.applicationName.localizedCaseInsensitiveCompare($1.applicationName) == .orderedAscending }
+
+        var appByRootBundleIdentifier: [String: SCRunningApplication] = [:]
+        for application in applications {
+            let matcher = ApplicationBundleMatcher(
+                targetBundleIdentifier: application.bundleIdentifier
+            )
+            let root = matcher.rootBundleIdentifier
+            if let current = appByRootBundleIdentifier[root] {
+                if application.bundleIdentifier == root,
+                    current.bundleIdentifier != root
+                {
+                    appByRootBundleIdentifier[root] = application
+                }
+            } else {
+                appByRootBundleIdentifier[root] = application
+            }
+        }
+
+        return appByRootBundleIdentifier.values
+            .sorted {
+                $0.applicationName.localizedCaseInsensitiveCompare($1.applicationName) == .orderedAscending
+            }
     }
 
     /// 根据 bundleId 或名称关键字匹配一个 app。
@@ -54,7 +70,15 @@ enum ContentResolver {
         guard let display = content.displays.first else {
             throw .screenRecordingPermissionDenied
         }
-        // 以主显示器为载体，仅包含目标 app，从而只捕获它的音频。
-        return SCContentFilter(display: display, including: [app], exceptingWindows: [])
+        let matcher = ApplicationBundleMatcher(targetBundleIdentifier: app.bundleIdentifier)
+        let matchingApplications = content.applications.filter {
+            matcher.matches($0.bundleIdentifier)
+        }
+        // Signal 等 app 的音频可能由 helper 进程承载，过滤器需要包含整个已知 app 家族。
+        return SCContentFilter(
+            display: display,
+            including: matchingApplications.isEmpty ? [app] : matchingApplications,
+            exceptingWindows: []
+        )
     }
 }

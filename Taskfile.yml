@@ -56,14 +56,44 @@ tasks:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app com.tencent.xinWeChat {{.CLI_ARGS}}
 
   record:signal:
-    desc: 快捷录制 Signal（按名称关键字匹配），Ctrl-C 结束；额外参数用 -- 透传（如 task record:signal -- --duration 30）
+    desc: 快捷录制 Signal，Ctrl-C 结束；额外参数用 -- 透传（如 task record:signal -- --duration 30）
     cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app Signal {{.CLI_ARGS}}
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app org.whispersystems.signal-desktop {{.CLI_ARGS}}
+
+  record:whatsapp:
+    desc: 快捷录制 WhatsApp，Ctrl-C 结束；额外参数用 -- 透传（如 task record:whatsapp -- --duration 30）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app net.whatsapp.WhatsApp {{.CLI_ARGS}}
+
+  record:telegram:
+    desc: 快捷录制 Telegram，Ctrl-C 结束；额外参数用 -- 透传（如 task record:telegram -- --duration 30）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app Telegram {{.CLI_ARGS}}
 
   watch:
     desc: 监听目标 app（默认微信）麦克风活动，通话开始自动录制、结束自动保存，Ctrl-C 退出；参数用 -- 透传（如 task watch -- --output-dir ~/Desktop/calls）
     cmds:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch {{.CLI_ARGS}}
+
+  watch:wechat:
+    desc: 自动监听并录制微信通话；额外参数用 -- 透传
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app com.tencent.xinWeChat {{.CLI_ARGS}}
+
+  watch:signal:
+    desc: 自动监听并录制 Signal 通话；额外参数用 -- 透传
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app org.whispersystems.signal-desktop {{.CLI_ARGS}}
+
+  watch:whatsapp:
+    desc: 自动监听并录制 WhatsApp 通话；额外参数用 -- 透传
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app net.whatsapp.WhatsApp {{.CLI_ARGS}}
+
+  watch:telegram:
+    desc: 自动监听并录制 Telegram 通话；额外参数用 -- 透传
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app Telegram {{.CLI_ARGS}}
 
   app:bundle:
     desc: 构建并组装 App Audio Recorder.app；SIGN_IDENTITY 可指定签名证书，默认 ad-hoc

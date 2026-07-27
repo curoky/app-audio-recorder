@@ -3,6 +3,9 @@ import Logging
 
 public struct CapturableApplication: Identifiable, Hashable, Sendable {
     public var id: String { bundleIdentifier }
+    public var callApplication: CallApplication? {
+        CallApplication.matching(bundleIdentifier: bundleIdentifier)
+    }
 
     public let name: String
     public let bundleIdentifier: String
@@ -65,7 +68,7 @@ public actor RecordingSession {
 
 /// 面向入口层的共享录制 API。CLI 与 GUI 都只通过这里枚举 app 和启动录制。
 public enum Recorder {
-    public static let defaultBundleIdentifier = ContentResolver.wechatBundleID
+    public static let defaultBundleIdentifier = CallApplication.weChat.primaryBundleIdentifier
 
     public static func applications() async throws -> [CapturableApplication] {
         try await ContentResolver.runningApps().map {
