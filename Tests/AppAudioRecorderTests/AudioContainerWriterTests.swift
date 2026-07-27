@@ -183,6 +183,76 @@ final class AudioContainerWriterTests: XCTestCase {
         XCTAssertEqual(streamDescription?.mChannelsPerFrame, 2)
     }
 
+    func testFillsMidRecordingTimestampGapWithSilence() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("mid-gap.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: false
+            )
+        )
+
+        try writer.append(
+            makeSampleBuffer(frameCount: 800, presentationTime: .zero),
+            to: .app
+        )
+        try writer.append(
+            makeSampleBuffer(
+                frameCount: 800,
+                presentationTime: CMTime(value: 2_400, timescale: 8_000)
+            ),
+            to: .app
+        )
+
+        XCTAssertEqual(writer.appFrames, 3_200)
+        try writer.finalizeInputs()
+        try await writer.completeWriting()
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(try totalFrameCount(asset: asset, track: tracks[0]), 3_200)
+    }
+
+    func testPadsShorterTrackTailToCommonEndTime() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("tail-padding.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
+        )
+
+        try writer.append(
+            makeSampleBuffer(frameCount: 1_600, presentationTime: .zero),
+            to: .app
+        )
+        try writer.append(
+            makeSampleBuffer(frameCount: 800, presentationTime: .zero),
+            to: .mic
+        )
+        try writer.finalizeInputs()
+        try await writer.completeWriting()
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        var durations: [Double] = []
+        for track in tracks {
+            durations.append(
+                try await track.load(.timeRange).duration.seconds
+            )
+        }
+        XCTAssertEqual(durations[0], 0.2, accuracy: 0.001)
+        XCTAssertEqual(durations[1], 0.2, accuracy: 0.001)
+    }
+
     func testFinalizePropagatesBufferedAppendFailure() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -203,6 +273,34 @@ final class AudioContainerWriterTests: XCTestCase {
         )
 
         XCTAssertThrowsError(try writer.finalizeInputs())
+    }
+
+    private func totalFrameCount(asset: AVAsset, track: AVAssetTrack) throws -> Int {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(
+            track: track,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsFloatKey: false,
+            ]
+        )
+        guard reader.canAdd(output) else {
+            throw TestError.cannotReadTrack
+        }
+        reader.add(output)
+        guard reader.startReading() else {
+            throw reader.error ?? TestError.cannotReadTrack
+        }
+
+        var frames = 0
+        while let sampleBuffer = output.copyNextSampleBuffer() {
+            frames += CMSampleBufferGetNumSamples(sampleBuffer)
+        }
+        if reader.status == .failed {
+            throw reader.error ?? TestError.cannotReadTrack
+        }
+        return frames
     }
 
     private func firstAudibleFrame(asset: AVAsset, track: AVAssetTrack) throws -> Int {

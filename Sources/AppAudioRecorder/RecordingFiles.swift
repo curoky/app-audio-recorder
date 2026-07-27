@@ -1,5 +1,32 @@
 import Foundation
 
+enum RecordingDiskSpaceState: Equatable {
+    case sufficient
+    case low
+    case critical
+}
+
+enum RecordingDiskSpace {
+    static let warningThreshold: Int64 = 500_000_000
+    static let criticalThreshold: Int64 = 100_000_000
+
+    static func state(availableBytes: Int64) -> RecordingDiskSpaceState {
+        if availableBytes < criticalThreshold {
+            return .critical
+        }
+        if availableBytes < warningThreshold {
+            return .low
+        }
+        return .sufficient
+    }
+
+    static func availableBytes(in directory: URL) -> Int64? {
+        try? directory.resourceValues(
+            forKeys: [.volumeAvailableCapacityForImportantUsageKey]
+        ).volumeAvailableCapacityForImportantUsage
+    }
+}
+
 extension URL {
     /// 返回目录中尚不存在的文件路径；冲突时依次追加 `-2`、`-3`。
     static func uniqueFile(

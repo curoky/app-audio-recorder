@@ -9,8 +9,9 @@ import ScreenCaptureKit
 /// （app 与可选 mic 写入同一个多轨容器）。
 ///
 /// 并发模型：`SCStreamOutput` 回调固定在注册时传入的串行队列 `sampleQueue` 上触发，
-/// `SCStreamDelegate` 的错误回调也显式转投该队列。所有可变写入状态（`writer`/
-/// `writeError`）都只在该队列上访问，故对外标记 `@unchecked Sendable` 是有依据的——
+/// `SCStreamDelegate` 的错误回调也显式转投该队列。所有可变写入状态（`writer`、
+/// `failure`、`writerError`）都只在该队列上访问，故对外标记 `@unchecked Sendable`
+/// 是有依据的——
 /// 这是桥接回调式 API 的必要手段，而非规避编译期检查。
 final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
@@ -18,10 +19,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private let configuration: RecordingConfiguration
     private let logger = AppLog.logger("capture")
     private var writer: AudioContainerWriter?
-    private let failureEvents: AsyncStream<Void>
-    private let failureContinuation: AsyncStream<Void>.Continuation
+    private let events: AsyncStream<RecordingEngineEvent>
+    private let eventContinuation: AsyncStream<RecordingEngineEvent>.Continuation
     private var stream: SCStream?
-    private var writeError: Error?
+    private var failure: RecorderError?
+    private var writerError: Error?
+    private var diskSpaceTimer: DispatchSourceTimer?
+    private var didWarnAboutDiskSpace = false
 
     /// - Parameters:
     ///   - outputURL: 多轨容器落盘路径。
@@ -32,23 +36,25 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     ) {
         self.outputURL = outputURL
         self.configuration = configuration
-        (self.failureEvents, self.failureContinuation) = AsyncStream.makeStream(
-            bufferingPolicy: .bufferingNewest(1)
+        (self.events, self.eventContinuation) = AsyncStream.makeStream(
+            bufferingPolicy: .bufferingNewest(4)
         )
         super.init()
-    }
-
-    /// 已写入的时长（秒），以 app 音轨为准，供结束时报告。
-    var recordedSeconds: Double {
-        sampleQueue.sync {
-            Double(writer?.appFrames ?? 0) / Double(configuration.sampleRate.rawValue)
-        }
     }
 
     // MARK: - 生命周期
 
     func start(filter: SCContentFilter) async throws(RecorderError) {
         do {
+            let outputDirectory = outputURL.deletingLastPathComponent()
+            if let availableBytes = RecordingDiskSpace.availableBytes(in: outputDirectory),
+                RecordingDiskSpace.state(availableBytes: availableBytes) == .critical
+            {
+                throw RecorderError.insufficientDiskSpace(
+                    availableBytes: availableBytes
+                )
+            }
+
             // 容器写入器在采样队列上创建，与后续样本追加共用同一串行域。
             try sampleQueue.sync {
                 writer = try AudioContainerWriter(
@@ -80,27 +86,30 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             try await stream.startCapture()
             self.stream = stream
+            sampleQueue.sync {
+                startDiskSpaceMonitor()
+            }
             logger.debug(
                 "捕获已启动：\(self.configuration.sampleRate.rawValue) Hz，\(self.configuration.channelCount.rawValue) 声道，麦克风 \(self.configuration.capturesMicrophone)"
             )
         } catch {
             sampleQueue.sync {
+                stopDiskSpaceMonitor()
                 writer?.cancelWriting(removeOutput: true)
                 writer = nil
             }
-            failureContinuation.finish()
+            eventContinuation.finish()
             let message = String(describing: error)
             logger.error("启动捕获失败：\(message, privacy: .public)")
-            throw .audioCaptureFailed
+            throw Self.recorderError(from: error)
         }
     }
 
-    /// 等待捕获流或写盘发生异常。
-    func waitForFailure() async {
-        for await _ in failureEvents { return }
+    func eventStream() async -> AsyncStream<RecordingEngineEvent> {
+        events
     }
 
-    func stop() async throws(RecorderError) {
+    func stop() async -> RecordingEngineStopResult {
         var stopError: Error?
         if let stream {
             do {
@@ -113,34 +122,86 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             self.stream = nil
         }
-        // 先在采样队列上同步标记所有输入结束（不再有样本追加），并取出已记录的错误。
-        let (writerToFinish, recordedError, finalizationError) = sampleQueue.sync {
+
+        let (
+            writerToFinish,
+            recordedFailure,
+            recordedWriterError,
+            finalizationError,
+            recordedSeconds,
+            appDroppedBuffers,
+            micDroppedBuffers
+        ) = sampleQueue.sync {
+            stopDiskSpaceMonitor()
             var finalizationError: Error?
             do {
                 try writer?.finalizeInputs()
             } catch {
                 finalizationError = error
             }
-            return (writer, writeError, finalizationError)
+            let seconds =
+                Double(writer?.recordedFrames ?? 0)
+                / Double(configuration.sampleRate.rawValue)
+            return (
+                writer,
+                failure,
+                writerError,
+                finalizationError,
+                seconds,
+                writer?.droppedBufferCount(for: .app) ?? 0,
+                writer?.droppedBufferCount(for: .mic) ?? 0
+            )
         }
-        failureContinuation.finish()
+        eventContinuation.finish()
+        if appDroppedBuffers > 0 || micDroppedBuffers > 0 {
+            logger.warning(
+                "写盘背压丢弃缓冲：app \(appDroppedBuffers)，mic \(micDroppedBuffers)"
+            )
+        }
 
-        // 容器收尾（异步 flush 到磁盘）在采样队列之外进行，此时已无并发样本追加。
+        var completionError: Error?
+        var outputCompleted = false
         do {
             try await writerToFinish?.completeWriting()
+            outputCompleted =
+                writerToFinish != nil
+                && recordedWriterError == nil
+                && finalizationError == nil
         } catch {
+            completionError = error
             let message = String(describing: error)
             logger.error("容器收尾写入失败：\(message, privacy: .public)")
-            stopError = stopError ?? error
         }
 
-        if let error = recordedError ?? finalizationError ?? stopError {
-            if let recorderError = error as? RecorderError {
-                throw recorderError
-            }
-            throw .audioCaptureFailed
+        if !outputCompleted {
+            writerToFinish?.cancelWriting(removeOutput: true)
         }
-        logger.debug("容器已写出：\(self.outputURL.path, privacy: .public)")
+        sampleQueue.sync {
+            writer = nil
+        }
+
+        var warnings: [String] = []
+        if let recordedFailure {
+            warnings.append(recordedFailure.localizedDescription)
+        }
+        for error in [stopError, recordedWriterError, finalizationError, completionError] {
+            guard let error else { continue }
+            let message = error.localizedDescription
+            if !warnings.contains(message) {
+                warnings.append(message)
+            }
+        }
+        if !outputCompleted {
+            warnings.append("录音文件未能完成写入，已移除无效文件。")
+        } else {
+            logger.debug("容器已写出：\(self.outputURL.path, privacy: .public)")
+        }
+
+        return RecordingEngineStopResult(
+            outputCompleted: outputCompleted,
+            recordedSeconds: recordedSeconds,
+            warning: warnings.isEmpty ? nil : warnings.joined(separator: "\n")
+        )
     }
 
     // MARK: - SCStreamOutput（仅在 sampleQueue 上回调）
@@ -150,7 +211,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
-        guard writeError == nil else { return }
+        guard failure == nil else { return }
         guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else { return }
 
         let track: AudioContainerWriter.Track
@@ -163,22 +224,82 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         do {
             try writer?.append(sampleBuffer, to: track)
         } catch {
-            recordFailure(error)
+            recordFailure(.audioCaptureFailed, writerError: error)
         }
     }
 
     // MARK: - SCStreamDelegate
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        sampleQueue.async { self.recordFailure(error) }
+        sampleQueue.async {
+            self.recordFailure(Self.recorderError(from: error))
+        }
     }
 
-    /// 仅在 `sampleQueue` 上调用；保留首个错误并通知等待方。
-    private func recordFailure(_ error: Error) {
-        guard writeError == nil else { return }
-        writeError = error
-        let message = String(describing: error)
+    // MARK: - 磁盘监控（仅在 sampleQueue 上调用）
+
+    private func startDiskSpaceMonitor() {
+        guard diskSpaceTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+        timer.schedule(deadline: .now() + 30, repeating: 30)
+        timer.setEventHandler { [weak self] in
+            self?.checkDiskSpace()
+        }
+        diskSpaceTimer = timer
+        timer.resume()
+    }
+
+    private func stopDiskSpaceMonitor() {
+        diskSpaceTimer?.cancel()
+        diskSpaceTimer = nil
+    }
+
+    private func checkDiskSpace() {
+        guard failure == nil,
+            let availableBytes = RecordingDiskSpace.availableBytes(
+                in: outputURL.deletingLastPathComponent()
+            )
+        else { return }
+
+        switch RecordingDiskSpace.state(availableBytes: availableBytes) {
+        case .sufficient:
+            break
+        case .low:
+            guard !didWarnAboutDiskSpace else { return }
+            didWarnAboutDiskSpace = true
+            let megabytes = availableBytes / 1_000_000
+            let message = "磁盘空间偏低（剩余 \(megabytes) MB），请尽快结束录制或释放空间。"
+            logger.warning("\(message, privacy: .public)")
+            eventContinuation.yield(.warning(message))
+        case .critical:
+            stopDiskSpaceMonitor()
+            recordFailure(
+                .insufficientDiskSpace(availableBytes: availableBytes)
+            )
+        }
+    }
+
+    /// 仅在 `sampleQueue` 上调用；保留首个故障并通知等待方。
+    private func recordFailure(
+        _ error: RecorderError,
+        writerError: Error? = nil
+    ) {
+        guard failure == nil else { return }
+        failure = error
+        self.writerError = writerError
+        let message = error.localizedDescription
         logger.error("捕获/写盘异常，将停止录制：\(message, privacy: .public)")
-        failureContinuation.yield()
+        eventContinuation.yield(.failure(error))
+    }
+
+    private static func recorderError(from error: Error) -> RecorderError {
+        if let recorderError = error as? RecorderError {
+            return recorderError
+        }
+        let nsError = error as NSError
+        if nsError.domain == SCStreamErrorDomain, nsError.code == -3_801 {
+            return .screenRecordingPermissionDenied
+        }
+        return .audioCaptureFailed
     }
 }

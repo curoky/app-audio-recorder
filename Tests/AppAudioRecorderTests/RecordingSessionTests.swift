@@ -5,7 +5,13 @@ import XCTest
 
 final class RecordingSessionTests: XCTestCase {
     func testConcurrentStopsOnlyStopEngineOnce() async {
-        let engine = StubRecordingEngine(recordedSeconds: 12.5)
+        let engine = StubRecordingEngine(
+            stopResult: RecordingEngineStopResult(
+                outputCompleted: true,
+                recordedSeconds: 12.5,
+                warning: nil
+            )
+        )
         let output = URL(fileURLWithPath: "/tmp/recording.m4a")
         let session = RecordingSession(engine: engine, outputURL: output)
 
@@ -20,10 +26,37 @@ final class RecordingSessionTests: XCTestCase {
         XCTAssertTrue(results.allSatisfy { $0.warning == nil })
     }
 
-    func testStopReturnsUnderlyingErrorAsWarning() async {
+    func testCompletedOutputCanCarryCaptureWarning() async {
         let engine = StubRecordingEngine(
-            recordedSeconds: 3,
-            stopError: RecorderError.operationAlreadyRunning
+            stopResult: RecordingEngineStopResult(
+                outputCompleted: true,
+                recordedSeconds: 3,
+                warning: RecorderError.audioCaptureFailed.localizedDescription
+            )
+        )
+        let output = URL(fileURLWithPath: "/tmp/recording.m4a")
+        let session = RecordingSession(
+            engine: engine,
+            outputURL: output
+        )
+
+        let result = await session.stop()
+
+        XCTAssertEqual(result.outputURL, output)
+        XCTAssertEqual(result.recordedSeconds, 3)
+        XCTAssertEqual(
+            result.warning,
+            RecorderError.audioCaptureFailed.localizedDescription
+        )
+    }
+
+    func testIncompleteOutputIsNotReportedAsSaved() async {
+        let engine = StubRecordingEngine(
+            stopResult: RecordingEngineStopResult(
+                outputCompleted: false,
+                recordedSeconds: 3,
+                warning: "写入失败"
+            )
         )
         let session = RecordingSession(
             engine: engine,
@@ -32,31 +65,28 @@ final class RecordingSessionTests: XCTestCase {
 
         let result = await session.stop()
 
-        XCTAssertEqual(result.recordedSeconds, 3)
-        XCTAssertEqual(
-            result.warning,
-            RecorderError.operationAlreadyRunning.localizedDescription
-        )
+        XCTAssertNil(result.outputURL)
+        XCTAssertEqual(result.warning, "写入失败")
     }
 }
 
 private actor StubRecordingEngine: RecordingEngine {
-    let recordedSeconds: Double
     private(set) var stopCount = 0
-    private let stopError: (any Error)?
+    private let stopResult: RecordingEngineStopResult
 
-    init(recordedSeconds: Double, stopError: (any Error)? = nil) {
-        self.recordedSeconds = recordedSeconds
-        self.stopError = stopError
+    init(stopResult: RecordingEngineStopResult) {
+        self.stopResult = stopResult
     }
 
-    func waitForFailure() async {}
+    func eventStream() async -> AsyncStream<RecordingEngineEvent> {
+        AsyncStream { continuation in
+            continuation.finish()
+        }
+    }
 
-    func stop() async throws {
+    func stop() async -> RecordingEngineStopResult {
         stopCount += 1
         await Task.yield()
-        if let stopError {
-            throw stopError
-        }
+        return stopResult
     }
 }

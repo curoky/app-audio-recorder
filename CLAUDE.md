@@ -11,8 +11,8 @@
 App 提供两种模式：
 
 - **手动录制**：用户选择目标 app、输出目录、采样率、声道和麦克风开关。
-- **自动监听**：监听目标 app 的麦克风活动，通话开始自动录制，静默达到所选时长后保存；
-  此模式始终录制 app 与麦克风双轨。
+- **自动监听**：每 3 秒轮询目标 app 家族的音频输入与输出活动，两者同时存在时开始录制；
+  活动结束达到所选时长后保存。此模式始终录制 app 与麦克风双轨。
 
 需要混音时，用 `task merge` 调用固定路径 `/opt/sb/bin/ffmpeg` 离线生成 WAV。
 混音逻辑不进入 Swift 产物。
@@ -71,6 +71,10 @@ task clean
 - app 音频是轨 0，麦克风是轨 1；手动关闭麦克风时只写轨 0。
 - 两条轨使用相同采样率、声道和 ALAC 16-bit 量化设置。
 - 写入器按首帧 PTS 为较晚开始的轨补起始静音，保证离线混音时保持对齐。
+- 写入期间按 PTS 补中途缺口，结束时为较短音轨补尾部静音；实时写盘背压只丢弃当前
+  buffer，后续通过 PTS 缺口补齐时间线，不中止整段录制。
+- M4A 每 10 秒写一个 movie fragment，进程异常退出时尽量保留可恢复内容。
+- 启动时要求至少 100 MB 可用空间；低于 500 MB 提示，低于 100 MB 自动停止并收尾。
 - 默认目录是 `~/Music/App Audio Recorder`，首次录制时自动创建。
 
 `task merge` 只适用于双轨容器，输出同目录下的 `<基名>-merged.wav`。默认混音增益为
@@ -102,8 +106,8 @@ task merge GAIN=0.5 -- recording.m4a
 | `Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
 | `ContentResolver.swift` | 枚举运行中 app、重新解析所选进程、构建捕获过滤器 |
 | `CallApplication.swift` | 通话 app 目录与主进程/helper 归属规则 |
-| `CallRecordingWatcher.swift` | 通话活动到录制 session 的生命周期 |
-| `CallActivityMonitor.swift` | CoreAudio 麦克风活动监听与结束去抖 |
+| `CallRecordingWatcher.swift` | 通话活动到录制 session 的生命周期及限速故障重试 |
+| `CallActivityMonitor.swift` | CoreAudio 输入/输出活动轮询与结束去抖 |
 | `AudioCaptureEngine.swift` | SCStream 生命周期与 app/mic 样本分发 |
 | `AudioContainerWriter.swift` | AVAssetWriter 多轨 ALAC 写入及 PTS 对齐 |
 | `RecordingFiles.swift` | 输出目录校验、唯一文件名 |
@@ -114,8 +118,8 @@ task merge GAIN=0.5 -- recording.m4a
 
 ## 关键并发约束
 
-- `AudioCaptureEngine` 的 `writer`、`writeError` 和 `AudioContainerWriter` 全部状态仅在串行
-  `sampleQueue` 上访问。`SCStreamDelegate` 错误回调也必须转投该队列。
+- `AudioCaptureEngine` 的 `writer`、`failure`、`writerError` 和 `AudioContainerWriter` 全部状态仅在串行
+  `sampleQueue` 上访问。磁盘监控 timer 与 `SCStreamDelegate` 错误回调也必须在该队列处理。
 - `AudioCaptureEngine` 的 `@unchecked Sendable` 依赖上述队列隔离前提；新增可变写入状态必须
   遵守同一约束。
 - `stop()` 先停止 SCStream，再在 `sampleQueue` 同步调用 `finalizeInputs()`，最后在队列外
@@ -124,15 +128,17 @@ task merge GAIN=0.5 -- recording.m4a
 - 关闭最后一个窗口或 Cmd-Q 时，`RecorderModel.shutdown()` 必须等待启动任务结束，并完成当前
   session 或 watcher 的收尾，不能直接取消 AVAssetWriter。
 - 自动监听停止时必须等待 monitor task 退场，确保 `stop()` 返回后不会再创建 writer。
+- 自动录制的可恢复故障最多在 30 秒内重试 3 次；停止监听时必须同时等待 monitor task
+  和正在执行的 retry task 退场。
 
 ## 测试
 
 `Tests/AppAudioRecorderTests/` 覆盖：
 
-- 多轨写入、PTS 对齐、迟到音轨、文件保护和取消清理。
+- 多轨写入、首帧与中途 PTS 对齐、尾部补齐、迟到音轨、文件保护和取消清理。
 - 唯一文件名与输出目录校验。
-- 通话 app/helper 匹配。
-- `RecordingSession.stop()` 并发幂等性。
+- 通话 app/helper 匹配、输入/输出活动判定和重试预算。
+- 磁盘水位策略、`RecordingSession.stop()` 并发幂等性及无效输出抑制。
 - GUI 默认配置和操作任务退出状态。
 
 ScreenCaptureKit 实际捕获、系统权限弹窗、GUI 交互和 `task merge` 仍需在有权限的真实

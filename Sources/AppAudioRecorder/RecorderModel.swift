@@ -214,9 +214,17 @@ final class RecorderModel {
             activity = .recording
             statusMessage = "正在录制 \(application.name)"
             failureTask = Task { [weak self, session] in
-                await session.waitForFailure()
-                guard !Task.isCancelled else { return }
-                await self?.finishManualRecording()
+                let events = await session.eventStream()
+                for await event in events {
+                    guard !Task.isCancelled else { return }
+                    switch event {
+                    case .warning(let message):
+                        self?.errorMessage = message
+                    case .failure:
+                        await self?.finishManualRecording()
+                        return
+                    }
+                }
             }
         } catch {
             activity = .idle
@@ -293,30 +301,37 @@ final class RecorderModel {
     private func handle(_ event: CallRecordingEvent) {
         guard watcher != nil else { return }
         switch event {
-        case .started(let outputURL):
+        case .started:
             recordingStartedAt = Date()
-            latestOutputURL = outputURL
             activity = .recording
             statusMessage = "检测到通话，正在录制"
         case .finished(let result):
             apply(result)
             recordingStartedAt = nil
             activity = .listening
-            statusMessage = "通话已保存，继续监听"
+            if result.outputURL != nil {
+                statusMessage = "通话已保存，继续监听"
+            }
+        case .warning(let message):
+            errorMessage = message
         case .failed(let message):
             errorMessage = message
             recordingStartedAt = nil
             activity = .listening
-            statusMessage = "本次录制启动失败，继续监听"
+            statusMessage = "录制中断，继续监听"
         }
     }
 
     private func apply(_ result: RecordingResult) {
-        latestOutputURL = result.outputURL
-        statusMessage = String(
-            format: "已保存 %.1f 秒录音",
-            result.recordedSeconds
-        )
+        if let outputURL = result.outputURL {
+            latestOutputURL = outputURL
+            statusMessage = String(
+                format: "已保存 %.1f 秒录音",
+                result.recordedSeconds
+            )
+        } else {
+            statusMessage = "录音未能保存"
+        }
         if let warning = result.warning {
             errorMessage = warning
         }

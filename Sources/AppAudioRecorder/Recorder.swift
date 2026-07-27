@@ -18,16 +18,25 @@ struct CapturableApplication: Identifiable, Hashable, Sendable {
 }
 
 struct RecordingResult: Sendable {
-    let outputURL: URL
+    let outputURL: URL?
+    let recordedSeconds: Double
+    let warning: String?
+}
+
+enum RecordingEngineEvent: Sendable {
+    case warning(String)
+    case failure(RecorderError)
+}
+
+struct RecordingEngineStopResult: Sendable {
+    let outputCompleted: Bool
     let recordedSeconds: Double
     let warning: String?
 }
 
 protocol RecordingEngine: Sendable {
-    var recordedSeconds: Double { get async }
-
-    func waitForFailure() async
-    func stop() async throws
+    func eventStream() async -> AsyncStream<RecordingEngineEvent>
+    func stop() async -> RecordingEngineStopResult
 }
 
 extension AudioCaptureEngine: RecordingEngine {}
@@ -44,8 +53,8 @@ actor RecordingSession {
         self.outputURL = outputURL
     }
 
-    func waitForFailure() async {
-        await engine.waitForFailure()
+    func eventStream() async -> AsyncStream<RecordingEngineEvent> {
+        await engine.eventStream()
     }
 
     func stop() async -> RecordingResult {
@@ -56,17 +65,11 @@ actor RecordingSession {
         let engine = self.engine
         let outputURL = self.outputURL
         let task = Task {
-            let warning: String?
-            do {
-                try await engine.stop()
-                warning = nil
-            } catch {
-                warning = error.localizedDescription
-            }
+            let result = await engine.stop()
             return RecordingResult(
-                outputURL: outputURL,
-                recordedSeconds: await engine.recordedSeconds,
-                warning: warning
+                outputURL: result.outputCompleted ? outputURL : nil,
+                recordedSeconds: result.recordedSeconds,
+                warning: result.warning
             )
         }
         stopTask = task

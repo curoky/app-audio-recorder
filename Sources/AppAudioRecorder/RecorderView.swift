@@ -174,7 +174,7 @@ struct RecorderView: View {
             }
 
             if model.mode == .automatic {
-                Text("自动监听以目标 app 使用麦克风作为通话信号，并始终录制 app 与麦克风双轨。")
+                Text("自动监听以目标 app 同时使用音频输入与输出作为通话信号，并始终录制 app 与麦克风双轨。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

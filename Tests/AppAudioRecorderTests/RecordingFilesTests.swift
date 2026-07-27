@@ -44,6 +44,25 @@ final class RecordingFilesTests: XCTestCase {
         XCTAssertThrowsError(try RecordingFiles.validateOutputDirectory(missing))
     }
 
+    func testDiskSpacePolicyUsesWarningAndCriticalThresholds() {
+        XCTAssertEqual(
+            RecordingDiskSpace.state(availableBytes: 500_000_000),
+            .sufficient
+        )
+        XCTAssertEqual(
+            RecordingDiskSpace.state(availableBytes: 499_999_999),
+            .low
+        )
+        XCTAssertEqual(
+            RecordingDiskSpace.state(availableBytes: 100_000_000),
+            .low
+        )
+        XCTAssertEqual(
+            RecordingDiskSpace.state(availableBytes: 99_999_999),
+            .critical
+        )
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

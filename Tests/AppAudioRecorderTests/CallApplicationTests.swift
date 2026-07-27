@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 @testable import AppAudioRecorder
@@ -71,5 +72,53 @@ final class CallApplicationTests: XCTestCase {
 
         XCTAssertTrue(matcher.matches("com.example.Audio"))
         XCTAssertFalse(matcher.matches("com.example.Audio.Helper"))
+    }
+
+    func testCallActivityRequiresInputAndOutputAcrossApplicationFamily() {
+        XCTAssertTrue(
+            CallActivityMonitor.hasCallActivity([
+                ProcessAudioActivity(usesInput: true, usesOutput: false),
+                ProcessAudioActivity(usesInput: false, usesOutput: true),
+            ])
+        )
+        XCTAssertFalse(
+            CallActivityMonitor.hasCallActivity([
+                ProcessAudioActivity(usesInput: true, usesOutput: false)
+            ])
+        )
+        XCTAssertFalse(
+            CallActivityMonitor.hasCallActivity([
+                ProcessAudioActivity(usesInput: false, usesOutput: true)
+            ])
+        )
+    }
+
+    func testRecordingRetryBudgetLimitsAttemptsWithinWindow() {
+        var budget = RecordingRetryBudget(maximumAttempts: 3, window: 30)
+        let start = Date(timeIntervalSinceReferenceDate: 1_000)
+
+        XCTAssertTrue(budget.consumeAttempt(at: start))
+        XCTAssertTrue(budget.consumeAttempt(at: start.addingTimeInterval(1)))
+        XCTAssertTrue(budget.consumeAttempt(at: start.addingTimeInterval(2)))
+        XCTAssertFalse(budget.consumeAttempt(at: start.addingTimeInterval(3)))
+        XCTAssertTrue(budget.consumeAttempt(at: start.addingTimeInterval(31)))
+    }
+
+    func testOnlyTransientCaptureFailuresAreRetryable() {
+        XCTAssertTrue(RecorderError.audioCaptureFailed.isRetryableCaptureFailure)
+        XCTAssertTrue(
+            RecorderError.applicationNotRunning(
+                bundleIdentifier: "com.example.Audio"
+            ).isRetryableCaptureFailure
+        )
+        XCTAssertFalse(
+            RecorderError.insufficientDiskSpace(
+                availableBytes: 1
+            ).isRetryableCaptureFailure
+        )
+        XCTAssertFalse(
+            RecorderError.screenRecordingPermissionDenied
+                .isRetryableCaptureFailure
+        )
     }
 }
