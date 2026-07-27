@@ -6,7 +6,7 @@
 
 `App Audio Recorder` 是 macOS 原生 SwiftUI 音频录制 App。它使用 ScreenCaptureKit
 录制指定 app 的系统输出，可选同时录制麦克风；两路音频以独立 ALAC 音轨写入同一个
-`.m4a` 容器。微信、Signal、WhatsApp、Telegram 已适配主进程及 helper/扩展进程。
+`.m4a` 容器。微信、Lark、Signal、WhatsApp、Telegram 已适配主进程及 helper/扩展进程。
 
 App 只进行手动录制：用户选择目标 app、输出目录、采样率、声道和麦克风开关后开始录制。
 通话提醒可独立多选监听 App；它每 3 秒读取一次 CoreAudio 活动，分别判断各 App 家族的

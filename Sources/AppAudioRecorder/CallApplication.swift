@@ -1,5 +1,6 @@
 enum CallApplication: String, CaseIterable, Sendable {
     case weChat
+    case lark
     case signal
     case whatsApp
     case telegram
@@ -8,6 +9,8 @@ enum CallApplication: String, CaseIterable, Sendable {
         switch self {
         case .weChat:
             "微信"
+        case .lark:
+            "Lark"
         case .signal:
             "Signal"
         case .whatsApp:
@@ -25,6 +28,11 @@ enum CallApplication: String, CaseIterable, Sendable {
         switch self {
         case .weChat:
             ["com.tencent.xinWeChat"]
+        case .lark:
+            [
+                "com.larksuite.macos.lark",
+                "com.electron.lark",
+            ]
         case .signal:
             ["org.whispersystems.signal-desktop"]
         case .whatsApp:

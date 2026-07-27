@@ -9,6 +9,14 @@ final class CallApplicationTests: XCTestCase {
             .weChat
         )
         XCTAssertEqual(
+            CallApplication.matching(bundleIdentifier: "com.larksuite.macos.lark"),
+            .lark
+        )
+        XCTAssertEqual(
+            CallApplication.matching(bundleIdentifier: "com.electron.lark"),
+            .lark
+        )
+        XCTAssertEqual(
             CallApplication.matching(bundleIdentifier: "org.whispersystems.signal-desktop"),
             .signal
         )
@@ -27,6 +35,12 @@ final class CallApplicationTests: XCTestCase {
     }
 
     func testSupportedApplicationMatcherIncludesDescendantBundles() {
+        let lark = ApplicationBundleMatcher(
+            targetBundleIdentifier: "com.larksuite.macos.lark"
+        )
+        let legacyLark = ApplicationBundleMatcher(
+            targetBundleIdentifier: "com.electron.lark"
+        )
         let signal = ApplicationBundleMatcher(
             targetBundleIdentifier: "org.whispersystems.signal-desktop"
         )
@@ -34,6 +48,9 @@ final class CallApplicationTests: XCTestCase {
             targetBundleIdentifier: "net.whatsapp.WhatsApp"
         )
 
+        XCTAssertTrue(lark.matches("com.larksuite.macos.lark.helper.renderer"))
+        XCTAssertTrue(lark.matches("com.larksuite.macos.lark.iron"))
+        XCTAssertTrue(legacyLark.matches("com.electron.lark.helper"))
         XCTAssertTrue(signal.matches("org.whispersystems.signal-desktop.helper"))
         XCTAssertTrue(signal.matches("org.whispersystems.signal-desktop.helper.Renderer"))
         XCTAssertTrue(whatsApp.matches("net.whatsapp.WhatsApp.ShareExtension"))
