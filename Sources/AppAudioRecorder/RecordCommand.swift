@@ -43,7 +43,7 @@ struct RecordCommand: AsyncParsableCommand {
     func run() async throws {
         let targetApp = try await ContentResolver.findApp(matching: app)
         let filter = try await ContentResolver.filter(for: targetApp)
-        let paths = try outputPaths(appName: targetApp.applicationName)
+        let outputURL = try containerURL(appName: targetApp.applicationName)
 
         if mic {
             // 录麦克风前先确保授权，避免录到一半才失败。
@@ -51,20 +51,15 @@ struct RecordCommand: AsyncParsableCommand {
         }
 
         let engine = AudioCaptureEngine(
-            appOutputURL: paths.app,
-            micOutputURL: mic ? paths.mic : nil,
+            outputURL: outputURL,
+            capturesMicrophone: mic,
             sampleRate: sampleRate,
             channelCount: channels
         )
 
         print("目标 app : \(targetApp.applicationName) (\(targetApp.bundleIdentifier))")
-        if mic {
-            print("输出文件 : \(paths.app.path)")
-            print("           \(paths.mic!.path)")
-        } else {
-            print("输出文件 : \(paths.app.path)")
-        }
-        print("采样率   : \(sampleRate) Hz，\(channels) 声道\(mic ? "，含麦克风" : "")")
+        print("输出文件 : \(outputURL.path)")
+        print("采样率   : \(sampleRate) Hz，\(channels) 声道\(mic ? "，含麦克风（双轨）" : "")")
         if duration > 0 {
             print("将录制 \(duration) 秒后自动停止（或按 Ctrl-C 提前结束）…")
         } else {
@@ -76,13 +71,9 @@ struct RecordCommand: AsyncParsableCommand {
         try await engine.stop()
 
         let seconds = engine.recordedSeconds
-        if mic, let micURL = paths.mic {
-            print(String(format: "\n已保存（时长约 %.1f 秒）：", seconds))
-            print("  app : \(paths.app.path)")
-            print("  mic : \(micURL.path)")
-            print("如需合并：app-audio-recorder merge \"\(paths.app.path)\" \"\(micURL.path)\"")
-        } else {
-            print(String(format: "\n已保存：%@（时长约 %.1f 秒）", paths.app.path, seconds))
+        print(String(format: "\n已保存：%@（时长约 %.1f 秒）", outputURL.path, seconds))
+        if mic {
+            print("容器含 app / mic 两条 ALAC 轨，起始偏移由容器时间线保存。")
         }
     }
 
@@ -123,33 +114,22 @@ struct RecordCommand: AsyncParsableCommand {
         }
     }
 
-    /// 输出文件的路径。`mic` 仅在录麦克风时使用。
-    private struct OutputPaths {
-        let app: URL
-        let mic: URL?
-    }
-
-    /// 从基础路径派生输出路径。
-    /// - 录麦克风：`<base>-app.wav` / `<base>-mic.wav` 两路独立文件（合并交给 `merge` 子命令）。
-    /// - 不录麦克风：`<base>.wav` 单文件。
-    private func outputPaths(appName: String) throws -> OutputPaths {
+    /// 从基础路径派生输出容器路径（单个 `.m4a` 多轨容器）。
+    private func containerURL(appName: String) throws -> URL {
         let base = baseURL(appName: appName)
         let dir = base.deletingLastPathComponent()
         guard FileManager.default.isWritableFile(atPath: dir.path) else {
             throw RecorderError.outputNotWritable(path: base.path)
         }
-
-        guard mic else {
-            return OutputPaths(app: base.appendingPathExtension("wav"), mic: nil)
-        }
-        return OutputPaths(app: suffixed(base, "app"), mic: suffixed(base, "mic"))
+        return base.appendingPathExtension("m4a")
     }
 
-    /// 基础路径（不含扩展名）：用户指定则去掉其 `.wav` 扩展名，否则用当前目录带时间戳的名字。
+    /// 基础路径（不含扩展名）：用户指定则去掉其 `.m4a`/`.wav` 扩展名，否则用当前目录带时间戳的名字。
     private func baseURL(appName: String) -> URL {
         if let output {
             let expanded = URL(expandingPath: output)
-            return expanded.pathExtension.lowercased() == "wav"
+            let ext = expanded.pathExtension.lowercased()
+            return (ext == "m4a" || ext == "wav")
                 ? expanded.deletingPathExtension()
                 : expanded
         }
@@ -159,12 +139,5 @@ struct RecordCommand: AsyncParsableCommand {
         let name = "\(safeName)-\(formatter.string(from: Date()))"
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(name)
-    }
-
-    private func suffixed(_ base: URL, _ suffix: String) -> URL {
-        let name = base.lastPathComponent
-        return base.deletingLastPathComponent()
-            .appendingPathComponent("\(name)-\(suffix)")
-            .appendingPathExtension("wav")
     }
 }

@@ -1,7 +1,7 @@
 import AVFoundation
 import Foundation
 
-/// 音频与路径相关的共享工具，收敛 `WAVWriter`/`AudioMerger`/各命令间原本重复的逻辑：
+/// 音频与路径相关的共享工具，收敛 `AudioMerger`/各命令间原本重复的逻辑：
 /// 16-bit PCM WAV 落盘格式、按需格式转换、`~` 路径展开。
 enum AudioFormatSupport {
     /// 创建一个 16-bit 整型 PCM WAV 写入文件（小端、非浮点），落盘格式全项目统一走这里。

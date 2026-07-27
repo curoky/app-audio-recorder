@@ -4,12 +4,13 @@ import ScreenCaptureKit
 
 /// 基于 ScreenCaptureKit 的按 app 音频捕获引擎，可选同时捕获麦克风输入。
 ///
-/// 只负责捕获生命周期与样本转发；样本落盘交给 `WAVWriter`（app 与 mic 各一路）。
+/// 只负责捕获生命周期与样本转发；样本落盘交给 `AudioContainerWriter`
+/// （app 与可选 mic 写入同一个多轨容器）。
 ///
 /// 并发模型：`SCStreamOutput` 回调固定在注册时传入的串行队列 `sampleQueue` 上触发，
-/// `SCStreamDelegate` 的错误回调也显式转投该队列。所有可变写入状态（`appWriter`/
-/// `micWriter`/`writeError`）都只在该队列上访问，故对外标记 `@unchecked Sendable`
-/// 是有依据的——这是桥接回调式 API 的必要手段，而非规避编译期检查。
+/// `SCStreamDelegate` 的错误回调也显式转投该队列。所有可变写入状态（`writer`/
+/// `writeError`）都只在该队列上访问，故对外标记 `@unchecked Sendable` 是有依据的——
+/// 这是桥接回调式 API 的必要手段，而非规避编译期检查。
 final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     let sampleRate: Int
     let channelCount: Int
@@ -17,27 +18,26 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     let capturesMicrophone: Bool
 
     private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
-    private let appWriter: WAVWriter
-    private let micWriter: WAVWriter?
+    private let outputURL: URL
+    private var writer: AudioContainerWriter?
     private let failureEvents: AsyncStream<Void>
     private let failureContinuation: AsyncStream<Void>.Continuation
     private var stream: SCStream?
     private var writeError: Error?
 
     /// - Parameters:
-    ///   - appOutputURL: app 音频落盘路径。
-    ///   - micOutputURL: 麦克风落盘路径；为 nil 时不捕获麦克风。
+    ///   - outputURL: 多轨容器落盘路径。
+    ///   - capturesMicrophone: 是否额外捕获麦克风并写入第二条轨。
     init(
-        appOutputURL: URL,
-        micOutputURL: URL?,
+        outputURL: URL,
+        capturesMicrophone: Bool,
         sampleRate: Int = 48_000,
         channelCount: Int = 2
     ) {
+        self.outputURL = outputURL
         self.sampleRate = sampleRate
         self.channelCount = channelCount
-        self.capturesMicrophone = micOutputURL != nil
-        self.appWriter = WAVWriter(outputURL: appOutputURL)
-        self.micWriter = micOutputURL.map { WAVWriter(outputURL: $0) }
+        self.capturesMicrophone = capturesMicrophone
         (self.failureEvents, self.failureContinuation) = AsyncStream.makeStream(
             bufferingPolicy: .bufferingNewest(1)
         )
@@ -46,13 +46,23 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     /// 已写入的时长（秒），以 app 音轨为准，供结束时报告。
     var recordedSeconds: Double {
-        sampleQueue.sync { Double(appWriter.totalFrames) / Double(sampleRate) }
+        sampleQueue.sync { Double(writer?.appFrames ?? 0) / Double(sampleRate) }
     }
 
     // MARK: - 生命周期
 
     func start(filter: SCContentFilter) async throws(RecorderError) {
         do {
+            // 容器写入器在采样队列上创建，与后续样本追加共用同一串行域。
+            try sampleQueue.sync {
+                writer = try AudioContainerWriter(
+                    outputURL: outputURL,
+                    sampleRate: sampleRate,
+                    channels: channelCount,
+                    capturesMicrophone: capturesMicrophone
+                )
+            }
+
             let config = SCStreamConfiguration()
             config.capturesAudio = true
             config.sampleRate = sampleRate
@@ -81,7 +91,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         }
     }
 
-    /// 等待捕获流或任一路写盘发生异常。
+    /// 等待捕获流或写盘发生异常。
     func waitForFailure() async {
         for await _ in failureEvents { return }
     }
@@ -96,13 +106,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             self.stream = nil
         }
-        // 在采样队列上同步收尾，确保各路 WAV 头长度被正确写回。
-        let recordedError = sampleQueue.sync {
-            appWriter.finish()
-            micWriter?.finish()
-            return writeError
+        // 先在采样队列上同步标记所有输入结束（不再有样本追加），并取出已记录的错误。
+        let (writerToFinish, recordedError) = sampleQueue.sync {
+            writer?.finalizeInputs()
+            return (writer, writeError)
         }
         failureContinuation.finish()
+
+        // 容器收尾（异步 flush 到磁盘）在采样队列之外进行，此时已无并发样本追加。
+        do {
+            try await writerToFinish?.completeWriting()
+        } catch {
+            stopError = stopError ?? error
+        }
 
         if let error = recordedError ?? stopError {
             if let recorderError = error as? RecorderError {
@@ -122,16 +138,15 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         guard writeError == nil else { return }
         guard sampleBuffer.isValid, CMSampleBufferDataIsReady(sampleBuffer) else { return }
 
-        let writer: WAVWriter?
+        let track: AudioContainerWriter.Track
         switch type {
-        case .audio: writer = appWriter
-        case .microphone: writer = micWriter
-        default: writer = nil
+        case .audio: track = .app
+        case .microphone: track = .mic
+        default: return
         }
-        guard let writer else { return }
 
         do {
-            try writer.write(sampleBuffer)
+            try writer?.append(sampleBuffer, to: track)
         } catch {
             recordFailure(error)
         }
