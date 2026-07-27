@@ -38,7 +38,7 @@ enum RecorderError: LocalizedError {
         case .mergeToolUnavailable:
             """
             未找到 ffmpeg，无法执行合并。
-            请先安装（如 `brew install ffmpeg`）并确保它在 PATH 中，然后重新运行。
+            本工具固定使用 \(FFmpegMerger.ffmpegPath)，请确认该文件存在且可执行，然后重新运行。
             """
         case let .inputNotReadable(path):
             "输入文件不存在或不可读：\(path)"

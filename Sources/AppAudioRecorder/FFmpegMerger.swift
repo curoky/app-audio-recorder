@@ -12,6 +12,9 @@ import Foundation
 ///
 /// 第一路格式用 `AVAudioFile` 探测（只读元数据，不做 DSP），因此只依赖 `ffmpeg` 一个外部命令。
 enum FFmpegMerger {
+    /// 固定的 `ffmpeg` 可执行路径（自编译静态版本），不依赖 `PATH` 查找。
+    static let ffmpegPath = "/opt/sb/bin/ffmpeg"
+
     /// 混音入口：探测第一路格式 → 构造参数 → 调用 `ffmpeg`。
     static func merge(
         appURL: URL,
@@ -70,12 +73,12 @@ enum FFmpegMerger {
         }
     }
 
-    /// 通过 `/usr/bin/env ffmpeg` 启动混音，await 子进程结束。
-    /// 退出码 127（env 找不到命令）映射为「未安装」，其余非 0 映射为混音失败。
+    /// 用固定路径的 `ffmpeg` 启动混音，await 子进程结束。
+    /// 可执行文件缺失时 `run()` 抛错，映射为「未安装」；启动成功但非 0 退出映射为混音失败。
     private static func run(_ args: [String]) async throws(RecorderError) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["ffmpeg"] + args
+        process.executableURL = URL(fileURLWithPath: ffmpegPath)
+        process.arguments = args
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
 
@@ -86,11 +89,7 @@ enum FFmpegMerger {
             throw .mergeToolUnavailable
         }
 
-        switch status {
-        case 0: return
-        case 127: throw .mergeToolUnavailable
-        default: throw .audioMergeFailed
-        }
+        guard status == 0 else { throw .audioMergeFailed }
     }
 
     /// 在 `run()` 之前登记 `terminationHandler`，规避「进程先结束、handler 后登记」的竞态。

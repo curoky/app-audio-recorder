@@ -8,7 +8,7 @@ macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/do
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
 - 唯一 Swift 依赖：`swift-argument-parser`（构建 CLI）。
-- 外部命令：`merge` 子命令依赖系统安装的 `ffmpeg`（`brew install ffmpeg`）；`record`/`list` 不需要。
+- 外部命令：`merge` 子命令固定调用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**，路径见 [FFmpegMerger.ffmpegPath](Sources/AppAudioRecorder/FFmpegMerger.swift#L15-L16)）；`record`/`list` 不需要。
 - 产物：单可执行文件 `app-audio-recorder`。
 
 ## 常用命令
@@ -127,7 +127,7 @@ CLI 入口聚合三个子命令，捕获逻辑与内容解析分层：
 
 ## 已知限制与扩展点
 
-- **麦克风混录**：`record` 默认同时录麦克风，与 app 音频作为两条 ALAC 轨写入同一 `.m4a` 容器（`--no-mic` 回到单轨容器）；合并是独立的 `merge` 命令（**依赖系统 `ffmpeg`**，合并前先 `ffmpeg -c copy` demux 两路 WAV），离线按 `--gain` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要可在 `FFmpegMerger` 的滤镜链里加 `loudnorm`/`sidechaincompress` 等 ffmpeg 滤镜。
+- **麦克风混录**：`record` 默认同时录麦克风，与 app 音频作为两条 ALAC 轨写入同一 `.m4a` 容器（`--no-mic` 回到单轨容器）；合并是独立的 `merge` 命令（**固定调用 `/opt/sb/bin/ffmpeg`，不走 `PATH`**，合并前先 `ffmpeg -c copy` demux 两路 WAV），离线按 `--gain` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要可在 `FFmpegMerger` 的滤镜链里加 `loudnorm`/`sidechaincompress` 等 ffmpeg 滤镜。
 - **时间对齐**：容器按各轨首帧 PTS 保留起始偏移，两路共享 SCStream 时钟时首帧通常同刻（offset 0）；若首帧错位则体现为轨道非零 `start_time`，demux 出的 WAV **不携带**该偏移（WAV 无时间戳），需要精确对齐混音时应从容器读 `start_time` 再喂 `ffmpeg` 的 `adelay`/`-itsoffset`。
 - **微信 bundleId 硬编码**为 `com.tencent.xinWeChat`（见 [ContentResolver.wechatBundleID](Sources/AppAudioRecorder/ContentResolver.swift#L7)）；版本不同则需 `list` 查到后用 `--app` 指定。
 - **分发**：作为独立 app 分发时建议带 `Info.plist`（`NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription`）与签名，以获得更稳定的授权体验。

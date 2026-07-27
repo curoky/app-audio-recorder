@@ -91,8 +91,8 @@ final class FFmpegMergerTests: XCTestCase {
 
     private func ffmpegAvailable() -> Bool {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["ffmpeg", "-version"]
+        process.executableURL = URL(fileURLWithPath: FFmpegMerger.ffmpegPath)
+        process.arguments = ["-version"]
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         do {
