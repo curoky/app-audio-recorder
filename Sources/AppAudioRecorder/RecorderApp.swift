@@ -1,18 +1,9 @@
 import AppKit
-import Logging
 import SwiftUI
 
 @main
 struct RecorderApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
-    init() {
-        LoggingSystem.bootstrap { label in
-            var handler = StreamLogHandler.standardError(label: label)
-            handler.logLevel = .info
-            return handler
-        }
-    }
 
     var body: some Scene {
         WindowGroup("App Audio Recorder") {

@@ -38,24 +38,12 @@ nonisolated final class AudioContainerWriter {
 
     /// - Parameters:
     ///   - outputURL: 多轨容器落盘路径（`.m4a`）。
-    ///   - sampleRate: 目标采样率。
-    ///   - channels: 目标声道数。
-    ///   - capturesMicrophone: 是否额外写一条麦克风轨。
+    ///   - configuration: 音频格式及是否额外写一条麦克风轨。
     init(
         outputURL: URL,
-        sampleRate: Int,
-        channels: Int,
-        capturesMicrophone: Bool,
-        overwritesExistingOutput: Bool = false
+        configuration: RecordingConfiguration
     ) throws {
-        guard AudioFormatConstraints.sampleRates.contains(sampleRate),
-              AudioFormatConstraints.channelCounts.contains(channels)
-        else {
-            throw RecorderError.audioCaptureFailed
-        }
-        if overwritesExistingOutput {
-            try? FileManager.default.removeItem(at: outputURL)
-        }
+        let sampleRate = configuration.sampleRate.rawValue
         self.outputURL = outputURL
         maximumPendingFrames = sampleRate
         writer = try AVAssetWriter(outputURL: outputURL, fileType: .m4a)
@@ -65,7 +53,7 @@ nonisolated final class AudioContainerWriter {
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatAppleLossless,
             AVSampleRateKey: Double(sampleRate),
-            AVNumberOfChannelsKey: channels,
+            AVNumberOfChannelsKey: configuration.channelCount.rawValue,
             AVEncoderBitDepthHintKey: 16,
         ]
 
@@ -86,7 +74,7 @@ nonisolated final class AudioContainerWriter {
         writer.add(appInput)
         inputs[.app] = appInput
 
-        if capturesMicrophone {
+        if configuration.capturesMicrophone {
             let micInput = makeInput()
             guard writer.canAdd(micInput) else {
                 throw RecorderError.audioCaptureFailed
@@ -217,10 +205,10 @@ nonisolated final class AudioContainerWriter {
         guard let sessionOrigin else { return }
         let samplePTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard CMTimeCompare(samplePTS, sessionOrigin) > 0,
-              let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-              var streamDescription =
-                  CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
-              let format = AVAudioFormat(streamDescription: &streamDescription)
+            let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+            var streamDescription =
+                CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
+            let format = AVAudioFormat(streamDescription: &streamDescription)
         else { return }
 
         let offsetSeconds = CMTimeGetSeconds(CMTimeSubtract(samplePTS, sessionOrigin))

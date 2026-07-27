@@ -1,11 +1,6 @@
 import Foundation
 
-public extension URL {
-    /// 从命令行字符串构造本地文件 URL，展开开头的 `~`。
-    init(expandingPath path: String) {
-        self.init(fileURLWithPath: (path as NSString).expandingTildeInPath)
-    }
-
+extension URL {
     /// 返回目录中尚不存在的文件路径；冲突时依次追加 `-2`、`-3`。
     static func uniqueFile(
         in directory: URL,
@@ -25,21 +20,21 @@ public extension URL {
     }
 }
 
-public enum RecordingFiles {
-    public static func validateOutputDirectory(
+enum RecordingFiles {
+    static func validateOutputDirectory(
         _ directory: URL,
         fileManager: FileManager = .default
     ) throws {
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: directory.path, isDirectory: &isDirectory),
-              isDirectory.boolValue,
-              fileManager.isWritableFile(atPath: directory.path)
+            isDirectory.boolValue,
+            fileManager.isWritableFile(atPath: directory.path)
         else {
             throw RecorderError.outputNotWritable(path: directory.path)
         }
     }
 
-    public static func uniqueContainerURL(
+    static func uniqueContainerURL(
         applicationName: String,
         in directory: URL,
         date: Date = Date(),

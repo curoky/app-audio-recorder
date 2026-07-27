@@ -1,7 +1,5 @@
-import AppAudioRecorderCore
 import AppKit
 import Foundation
-import Logging
 import Observation
 
 enum RecorderMode: String, CaseIterable, Identifiable {
@@ -17,7 +15,8 @@ final class RecorderModel {
     var mode = RecorderMode.manual
     var applications: [CapturableApplication] = []
     var selectedBundleIdentifier: String?
-    var capturesMicrophone = true
+    var recordingConfiguration = RecordingConfiguration()
+    var callEndDelay = CallEndDelay.twoSeconds
     var outputDirectory: URL
     var errorMessage: String?
 
@@ -26,7 +25,6 @@ final class RecorderModel {
     private(set) var recordingStartedAt: Date?
     private(set) var latestOutputURL: URL?
 
-    @ObservationIgnored private let logger = AppLog.logger("gui")
     @ObservationIgnored private var manualSession: RecordingSession?
     @ObservationIgnored private var watcher: CallRecordingWatcher?
     @ObservationIgnored private var failureTask: Task<Void, Never>?
@@ -40,7 +38,8 @@ final class RecorderModel {
         if let saved = defaults.string(forKey: Self.outputDirectoryKey) {
             outputDirectory = URL(fileURLWithPath: saved, isDirectory: true)
         } else {
-            let music = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
+            let music =
+                FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first
                 ?? FileManager.default.homeDirectoryForCurrentUser
             outputDirectory = music.appendingPathComponent("App Audio Recorder", isDirectory: true)
         }
@@ -92,12 +91,14 @@ final class RecorderModel {
             if !loaded.contains(where: { $0.bundleIdentifier == selectedBundleIdentifier }) {
                 selectedBundleIdentifier =
                     loaded.first(where: {
-                        $0.bundleIdentifier == Recorder.defaultBundleIdentifier
+                        $0.bundleIdentifier
+                            == CallApplication.weChat.primaryBundleIdentifier
                     })?.bundleIdentifier
                     ?? loaded.first(where: { $0.callApplication != nil })?.bundleIdentifier
                     ?? loaded.first?.bundleIdentifier
             }
-            statusMessage = loaded.isEmpty
+            statusMessage =
+                loaded.isEmpty
                 ? "没有找到可录音的运行中 app"
                 : "选择目标 app 后即可开始"
         } catch {
@@ -179,9 +180,7 @@ final class RecorderModel {
             let session = try await Recorder.startRecording(
                 application: application,
                 outputURL: outputURL,
-                capturesMicrophone: capturesMicrophone,
-                overwritesExistingOutput: false,
-                logger: logger
+                configuration: recordingConfiguration
             )
             guard !Task.isCancelled else {
                 _ = await session.stop()
@@ -229,7 +228,8 @@ final class RecorderModel {
             let watcher = CallRecordingWatcher(
                 application: application,
                 outputDirectory: outputDirectory,
-                logger: logger
+                recordingConfiguration: recordingConfiguration,
+                endDelay: callEndDelay
             )
             let events = try await watcher.start()
             guard !Task.isCancelled else {
@@ -272,17 +272,17 @@ final class RecorderModel {
     private func handle(_ event: CallRecordingEvent) {
         guard watcher != nil else { return }
         switch event {
-        case let .started(outputURL):
+        case .started(let outputURL):
             recordingStartedAt = Date()
             latestOutputURL = outputURL
             activity = .recording
             statusMessage = "检测到通话，正在录制"
-        case let .finished(result):
+        case .finished(let result):
             apply(result)
             recordingStartedAt = nil
             activity = .listening
             statusMessage = "通话已保存，继续监听"
-        case let .failed(message):
+        case .failed(let message):
             errorMessage = message
             recordingStartedAt = nil
             activity = .listening

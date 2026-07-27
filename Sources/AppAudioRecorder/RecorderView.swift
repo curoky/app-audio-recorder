@@ -1,4 +1,3 @@
-import AppAudioRecorderCore
 import AppKit
 import SwiftUI
 
@@ -88,12 +87,63 @@ struct RecorderView: View {
                         "同时录制麦克风",
                         isOn: Binding(
                             get: {
-                                model.mode == .automatic || model.capturesMicrophone
+                                model.mode == .automatic
+                                    || model.recordingConfiguration.capturesMicrophone
                             },
-                            set: { model.capturesMicrophone = $0 }
+                            set: {
+                                model.recordingConfiguration.capturesMicrophone = $0
+                            }
                         )
                     )
-                        .disabled(model.isActive || model.mode == .automatic)
+                    .disabled(model.isActive || model.mode == .automatic)
+                }
+
+                GridRow {
+                    Text("采样率")
+                    Picker(
+                        "",
+                        selection: $model.recordingConfiguration.sampleRate
+                    ) {
+                        ForEach(
+                            RecordingConfiguration.SampleRate.allCases,
+                            id: \.self
+                        ) { sampleRate in
+                            Text(sampleRateTitle(sampleRate)).tag(sampleRate)
+                        }
+                    }
+                    .labelsHidden()
+                    .disabled(model.isActive)
+                }
+
+                GridRow {
+                    Text("声道")
+                    Picker(
+                        "",
+                        selection: $model.recordingConfiguration.channelCount
+                    ) {
+                        ForEach(
+                            RecordingConfiguration.ChannelCount.allCases,
+                            id: \.self
+                        ) { channelCount in
+                            Text(channelCountTitle(channelCount)).tag(channelCount)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .disabled(model.isActive)
+                }
+
+                if model.mode == .automatic {
+                    GridRow {
+                        Text("结束判定")
+                        Picker("", selection: $model.callEndDelay) {
+                            ForEach(CallEndDelay.allCases, id: \.self) { delay in
+                                Text(callEndDelayTitle(delay)).tag(delay)
+                            }
+                        }
+                        .labelsHidden()
+                        .disabled(model.isActive)
+                    }
                 }
             }
 
@@ -141,7 +191,7 @@ struct RecorderView: View {
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(width: 500)
         .task {
             await model.refreshApplications()
         }
@@ -181,5 +231,34 @@ struct RecorderView: View {
         }
         guard hasSameName else { return application.name }
         return "\(application.name)（\(application.bundleIdentifier)，PID \(application.processID)）"
+    }
+
+    private func sampleRateTitle(
+        _ sampleRate: RecordingConfiguration.SampleRate
+    ) -> String {
+        if sampleRate.rawValue == 44_100 {
+            return "44.1 kHz"
+        }
+        return "\(sampleRate.rawValue / 1_000) kHz"
+    }
+
+    private func channelCountTitle(
+        _ channelCount: RecordingConfiguration.ChannelCount
+    ) -> String {
+        switch channelCount {
+        case .mono:
+            "单声道"
+        case .stereo:
+            "立体声"
+        }
+    }
+
+    private func callEndDelayTitle(_ delay: CallEndDelay) -> String {
+        switch delay {
+        case .immediate:
+            "立即"
+        default:
+            String(format: "%g 秒静默", delay.rawValue)
+        }
     }
 }

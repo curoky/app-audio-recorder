@@ -1,8 +1,9 @@
 import Foundation
 import XCTest
-@testable import AppAudioRecorderCore
 
-final class PathSupportTests: XCTestCase {
+@testable import AppAudioRecorder
+
+final class RecordingFilesTests: XCTestCase {
     func testUniqueFileUsesFirstAvailableSuffix() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -41,14 +42,6 @@ final class PathSupportTests: XCTestCase {
         let missing = directory.appendingPathComponent("missing", isDirectory: true)
 
         XCTAssertThrowsError(try RecordingFiles.validateOutputDirectory(missing))
-    }
-
-    func testExpandingPathExpandsHomeDirectory() {
-        let url = URL(expandingPath: "~/recordings")
-        XCTAssertEqual(
-            url.path,
-            URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("recordings").path
-        )
     }
 
     private func makeTemporaryDirectory() throws -> URL {

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import AppAudioRecorderCore
+@testable import AppAudioRecorder
 
 final class CallApplicationTests: XCTestCase {
     func testRecognizesSupportedMainBundles() {

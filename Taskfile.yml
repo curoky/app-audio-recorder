@@ -1,14 +1,11 @@
 # Taskfile：收敛项目常用命令。安装 task：https://taskfile.dev
-# 用法：task <名称>；给可执行文件传参用 -- 透传，如 `task record -- --app WeChat --duration 30`
+# 用法：task <名称>；混音输入路径用 -- 透传。
 version: "3"
 
 vars:
   BIN: app-audio-recorder
   RELEASE_BIN: .build/release/{{.BIN}}
-  GUI_BIN: app-audio-recorder-gui
-  GUI_RELEASE_BIN: .build/release/{{.GUI_BIN}}
   APP_BUNDLE: .build/release/App Audio Recorder.app
-  INSTALL_DIR: /usr/local/bin
   # 在嵌套沙箱环境（如 IDE Agent）里，SwiftPM 自带的 sandbox-exec 会与外层沙箱冲突
   # （sandbox_apply: Operation not permitted）。禁用 SwiftPM 沙箱以规避；本地正常终端下加不加都可。
   SANDBOX_FLAG: --disable-sandbox
@@ -26,7 +23,7 @@ tasks:
       - swift build {{.SANDBOX_FLAG}}
 
   build:release:
-    desc: release 构建 CLI 与 GUI
+    desc: release 构建 App
     cmds:
       - swift build {{.SANDBOX_FLAG}} -c release
 
@@ -35,66 +32,6 @@ tasks:
     cmds:
       - swift test {{.SANDBOX_FLAG}}
 
-  run:
-    desc: 运行工具，额外参数用 -- 透传（如 task run -- list）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} {{.CLI_ARGS}}
-
-  list:
-    desc: 列出可录音的运行中 app
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} list
-
-  record:
-    desc: 录制（默认微信），Ctrl-C 结束；参数用 -- 透传（如 task record -- --app WeChat）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record {{.CLI_ARGS}}
-
-  record:wechat:
-    desc: 快捷录制微信（bundleId com.tencent.xinWeChat），Ctrl-C 结束；额外参数用 -- 透传（如 task record:wechat -- --duration 30）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app com.tencent.xinWeChat {{.CLI_ARGS}}
-
-  record:signal:
-    desc: 快捷录制 Signal，Ctrl-C 结束；额外参数用 -- 透传（如 task record:signal -- --duration 30）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app org.whispersystems.signal-desktop {{.CLI_ARGS}}
-
-  record:whatsapp:
-    desc: 快捷录制 WhatsApp，Ctrl-C 结束；额外参数用 -- 透传（如 task record:whatsapp -- --duration 30）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app net.whatsapp.WhatsApp {{.CLI_ARGS}}
-
-  record:telegram:
-    desc: 快捷录制 Telegram，Ctrl-C 结束；额外参数用 -- 透传（如 task record:telegram -- --duration 30）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app Telegram {{.CLI_ARGS}}
-
-  watch:
-    desc: 监听目标 app（默认微信）麦克风活动，通话开始自动录制、结束自动保存，Ctrl-C 退出；参数用 -- 透传（如 task watch -- --output-dir ~/Desktop/calls）
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch {{.CLI_ARGS}}
-
-  watch:wechat:
-    desc: 自动监听并录制微信通话；额外参数用 -- 透传
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app com.tencent.xinWeChat {{.CLI_ARGS}}
-
-  watch:signal:
-    desc: 自动监听并录制 Signal 通话；额外参数用 -- 透传
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app org.whispersystems.signal-desktop {{.CLI_ARGS}}
-
-  watch:whatsapp:
-    desc: 自动监听并录制 WhatsApp 通话；额外参数用 -- 透传
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app net.whatsapp.WhatsApp {{.CLI_ARGS}}
-
-  watch:telegram:
-    desc: 自动监听并录制 Telegram 通话；额外参数用 -- 透传
-    cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch --app Telegram {{.CLI_ARGS}}
-
   app:bundle:
     desc: 构建并组装 App Audio Recorder.app；SIGN_IDENTITY 可指定签名证书，默认 ad-hoc
     deps: [build:release]
@@ -102,7 +39,7 @@ tasks:
       SIGN_IDENTITY: '{{.SIGN_IDENTITY | default "-"}}'
     cmds:
       - mkdir -p "{{.APP_BUNDLE}}/Contents/MacOS"
-      - cp "{{.GUI_RELEASE_BIN}}" "{{.APP_BUNDLE}}/Contents/MacOS/"
+      - cp "{{.RELEASE_BIN}}" "{{.APP_BUNDLE}}/Contents/MacOS/"
       - cp Support/Info.plist "{{.APP_BUNDLE}}/Contents/"
       - /usr/bin/plutil -lint "{{.APP_BUNDLE}}/Contents/Info.plist"
       - /usr/bin/codesign --force --sign "{{.SIGN_IDENTITY}}" "{{.APP_BUNDLE}}"
@@ -120,7 +57,7 @@ tasks:
       - /usr/bin/ditto "{{.APP_BUNDLE}}" "/Applications/App Audio Recorder.app"
 
   merge:
-    desc: 用 ffmpeg 把多轨容器（record 产出的 .m4a）内 app+mic 两条轨离线混音成 <基名>-merged.wav；容器路径用 -- 传（如 task merge -- 微信-2026-07-27.m4a），改增益用 GAIN=0.5
+    desc: 用 ffmpeg 把 App 产出的双轨 .m4a 混音成 <基名>-merged.wav；容器路径用 -- 传，改增益用 GAIN=0.5
     silent: true
     vars:
       # 混音增益：两路相加前统一乘的系数。0.5 保证不削波，0.707≈-3dB 折中，1.0 等量叠加。
@@ -135,12 +72,6 @@ tasks:
         -filter_complex "[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,volume={{.GAIN}}[out]"
         -map "[out]" -c:a pcm_s16le -- "{{.OUT}}"
       - echo "已保存：{{.OUT}}"
-
-  install:
-    desc: release 构建并安装到 {{.INSTALL_DIR}}
-    deps: [build:release]
-    cmds:
-      - cp {{.RELEASE_BIN}} {{.INSTALL_DIR}}/
 
   clean:
     desc: 清理构建产物

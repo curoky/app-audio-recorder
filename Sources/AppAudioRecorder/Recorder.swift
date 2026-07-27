@@ -1,15 +1,14 @@
 import Foundation
-import Logging
 
-public struct CapturableApplication: Identifiable, Hashable, Sendable {
-    public var id: String { bundleIdentifier }
-    public var callApplication: CallApplication? {
+struct CapturableApplication: Identifiable, Hashable, Sendable {
+    var id: String { bundleIdentifier }
+    var callApplication: CallApplication? {
         CallApplication.matching(bundleIdentifier: bundleIdentifier)
     }
 
-    public let name: String
-    public let bundleIdentifier: String
-    public let processID: Int32
+    let name: String
+    let bundleIdentifier: String
+    let processID: Int32
 
     init(name: String, bundleIdentifier: String, processID: Int32) {
         self.name = name
@@ -18,10 +17,10 @@ public struct CapturableApplication: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct RecordingResult: Sendable {
-    public let outputURL: URL
-    public let recordedSeconds: Double
-    public let warning: String?
+struct RecordingResult: Sendable {
+    let outputURL: URL
+    let recordedSeconds: Double
+    let warning: String?
 }
 
 protocol RecordingEngine: Sendable {
@@ -33,9 +32,9 @@ protocol RecordingEngine: Sendable {
 
 extension AudioCaptureEngine: RecordingEngine {}
 
-/// 一段正在进行的录制。停止操作幂等，CLI 与 GUI 可安全共享同一生命周期语义。
-public actor RecordingSession {
-    public nonisolated let outputURL: URL
+/// 一段正在进行的录制。停止操作幂等，便于异常与退出流程并发收尾。
+actor RecordingSession {
+    nonisolated let outputURL: URL
 
     private let engine: any RecordingEngine
     private var stopTask: Task<RecordingResult, Never>?
@@ -45,11 +44,11 @@ public actor RecordingSession {
         self.outputURL = outputURL
     }
 
-    public func waitForFailure() async {
+    func waitForFailure() async {
         await engine.waitForFailure()
     }
 
-    public func stop() async -> RecordingResult {
+    func stop() async -> RecordingResult {
         if let stopTask {
             return await stopTask.value
         }
@@ -75,11 +74,8 @@ public actor RecordingSession {
     }
 }
 
-/// 面向入口层的共享录制 API。CLI 与 GUI 都只通过这里枚举 app 和启动录制。
-public enum Recorder {
-    public static let defaultBundleIdentifier = CallApplication.weChat.primaryBundleIdentifier
-
-    public static func applications() async throws -> [CapturableApplication] {
+enum Recorder {
+    static func applications() async throws -> [CapturableApplication] {
         try await ContentResolver.runningApps().map {
             CapturableApplication(
                 name: $0.applicationName,
@@ -89,8 +85,12 @@ public enum Recorder {
         }
     }
 
-    public static func application(matching query: String) async throws -> CapturableApplication {
-        let app = try await ContentResolver.findApp(matching: query)
+    static func runningApplication(
+        bundleIdentifier: String
+    ) async throws -> CapturableApplication {
+        let app = try await ContentResolver.findApp(
+            bundleIdentifier: bundleIdentifier
+        )
         return CapturableApplication(
             name: app.applicationName,
             bundleIdentifier: app.bundleIdentifier,
@@ -98,33 +98,22 @@ public enum Recorder {
         )
     }
 
-    public static func startRecording(
+    static func startRecording(
         application: CapturableApplication,
         outputURL: URL,
-        capturesMicrophone: Bool,
-        sampleRate: Int = 48_000,
-        channelCount: Int = 2,
-        overwritesExistingOutput: Bool = false,
-        logger: Logger = AppLog.logger("capture")
+        configuration: RecordingConfiguration
     ) async throws -> RecordingSession {
-        guard AudioFormatConstraints.sampleRates.contains(sampleRate),
-              AudioFormatConstraints.channelCounts.contains(channelCount)
-        else {
-            throw RecorderError.invalidConfiguration
-        }
-        if capturesMicrophone {
+        if configuration.capturesMicrophone {
             try await MicrophonePermission.ensureAuthorized()
         }
 
-        let target = try await ContentResolver.findApp(matching: application.bundleIdentifier)
+        let target = try await ContentResolver.findApp(
+            bundleIdentifier: application.bundleIdentifier
+        )
         let filter = try await ContentResolver.filter(for: target)
         let engine = AudioCaptureEngine(
             outputURL: outputURL,
-            capturesMicrophone: capturesMicrophone,
-            sampleRate: sampleRate,
-            channelCount: channelCount,
-            overwritesExistingOutput: overwritesExistingOutput,
-            logger: logger
+            configuration: configuration
         )
         try await engine.start(filter: filter)
         return RecordingSession(engine: engine, outputURL: outputURL)

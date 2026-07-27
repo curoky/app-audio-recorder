@@ -46,28 +46,27 @@ enum ContentResolver {
             }
     }
 
-    /// 根据 bundleId 或名称关键字匹配一个 app。
-    static func findApp(matching query: String) async throws(RecorderError) -> SCRunningApplication {
+    /// 重新获取所选 app 的当前进程；已适配 app 同时接受其 helper 进程。
+    static func findApp(
+        bundleIdentifier: String
+    ) async throws(RecorderError) -> SCRunningApplication {
         let apps = try await runningApps()
         guard !apps.isEmpty else { throw .noAppsAvailable }
 
-        // 优先精确匹配 bundleId，其次名称包含（不区分大小写）。
-        if let exact = apps.first(where: { $0.bundleIdentifier == query }) {
+        if let exact = apps.first(where: {
+            $0.bundleIdentifier == bundleIdentifier
+        }) {
             return exact
         }
-        let queryMatcher = ApplicationBundleMatcher(targetBundleIdentifier: query)
+        let matcher = ApplicationBundleMatcher(
+            targetBundleIdentifier: bundleIdentifier
+        )
         if let byFamily = apps.first(where: {
-            queryMatcher.belongsToSameFamily(as: $0.bundleIdentifier)
+            matcher.belongsToSameFamily(as: $0.bundleIdentifier)
         }) {
             return byFamily
         }
-        if let byName = apps.first(where: {
-            $0.applicationName.localizedCaseInsensitiveContains(query)
-                || $0.bundleIdentifier.localizedCaseInsensitiveContains(query)
-        }) {
-            return byName
-        }
-        throw .appNotFound(query: query)
+        throw .applicationNotRunning(bundleIdentifier: bundleIdentifier)
     }
 
     /// 为指定 app 构建「只包含该 app 音频」的过滤器。

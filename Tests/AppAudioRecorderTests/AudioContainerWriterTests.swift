@@ -1,23 +1,10 @@
 import AVFoundation
 import CoreMedia
 import XCTest
-@testable import AppAudioRecorderCore
+
+@testable import AppAudioRecorder
 
 final class AudioContainerWriterTests: XCTestCase {
-    func testRejectsSampleRateThatWouldCrashAVFoundation() throws {
-        let directory = try makeTemporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-
-        XCTAssertThrowsError(
-            try AudioContainerWriter(
-                outputURL: directory.appendingPathComponent("invalid.m4a"),
-                sampleRate: 7_999,
-                channels: 2,
-                capturesMicrophone: false
-            )
-        )
-    }
-
     func testWriterPreservesExistingFileByDefault() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -28,9 +15,11 @@ final class AudioContainerWriterTests: XCTestCase {
         XCTAssertThrowsError(
             try AudioContainerWriter(
                 outputURL: output,
-                sampleRate: 8_000,
-                channels: 1,
-                capturesMicrophone: false
+                configuration: RecordingConfiguration(
+                    sampleRate: .hz8K,
+                    channelCount: .mono,
+                    capturesMicrophone: false
+                )
             )
         )
         XCTAssertEqual(try Data(contentsOf: output), original)
@@ -42,9 +31,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("cancelled.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 1,
-            capturesMicrophone: false
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: false
+            )
         )
 
         writer.cancelWriting(removeOutput: true)
@@ -58,9 +49,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("bounded-pending.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 1,
-            capturesMicrophone: true
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
         )
 
         try writer.append(
@@ -89,9 +82,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("two-tracks.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 1,
-            capturesMicrophone: true
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
         )
 
         try writer.append(
@@ -125,9 +120,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("late-track.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 1,
-            capturesMicrophone: true
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
         )
 
         try writer.append(
@@ -158,9 +155,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("stereo.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 2,
-            capturesMicrophone: false
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .stereo,
+                capturesMicrophone: false
+            )
         )
 
         try writer.append(
@@ -190,9 +189,11 @@ final class AudioContainerWriterTests: XCTestCase {
         let output = directory.appendingPathComponent("invalid-timeline.m4a")
         let writer = try AudioContainerWriter(
             outputURL: output,
-            sampleRate: 8_000,
-            channels: 1,
-            capturesMicrophone: true
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
         )
         writer.cancelWriting(removeOutput: false)
 
@@ -225,9 +226,9 @@ final class AudioContainerWriterTests: XCTestCase {
         var precedingFrames = 0
         while let sampleBuffer = output.copyNextSampleBuffer() {
             guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
-                  var streamDescription =
-                      CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
-                  let format = AVAudioFormat(streamDescription: &streamDescription)
+                var streamDescription =
+                    CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)?.pointee,
+                let format = AVAudioFormat(streamDescription: &streamDescription)
             else {
                 throw TestError.cannotReadTrack
             }
@@ -236,12 +237,13 @@ final class AudioContainerWriterTests: XCTestCase {
                 throw TestError.cannotReadTrack
             }
             pcmBuffer.frameLength = frameCount
-            guard CMSampleBufferCopyPCMDataIntoAudioBufferList(
-                sampleBuffer,
-                at: 0,
-                frameCount: Int32(frameCount),
-                into: pcmBuffer.mutableAudioBufferList
-            ) == noErr, let channels = pcmBuffer.floatChannelData
+            guard
+                CMSampleBufferCopyPCMDataIntoAudioBufferList(
+                    sampleBuffer,
+                    at: 0,
+                    frameCount: Int32(frameCount),
+                    into: pcmBuffer.mutableAudioBufferList
+                ) == noErr, let channels = pcmBuffer.floatChannelData
             else {
                 throw TestError.cannotReadTrack
             }

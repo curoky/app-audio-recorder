@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
-@testable import AppAudioRecorderCore
+
+@testable import AppAudioRecorder
 
 final class RecordingSessionTests: XCTestCase {
     func testConcurrentStopsOnlyStopEngineOnce() async {
@@ -22,7 +23,7 @@ final class RecordingSessionTests: XCTestCase {
     func testStopReturnsUnderlyingErrorAsWarning() async {
         let engine = StubRecordingEngine(
             recordedSeconds: 3,
-            stopError: RecorderError.invalidConfiguration
+            stopError: RecorderError.operationAlreadyRunning
         )
         let session = RecordingSession(
             engine: engine,
@@ -32,7 +33,10 @@ final class RecordingSessionTests: XCTestCase {
         let result = await session.stop()
 
         XCTAssertEqual(result.recordedSeconds, 3)
-        XCTAssertEqual(result.warning, RecorderError.invalidConfiguration.localizedDescription)
+        XCTAssertEqual(
+            result.warning,
+            RecorderError.operationAlreadyRunning.localizedDescription
+        )
     }
 }
 

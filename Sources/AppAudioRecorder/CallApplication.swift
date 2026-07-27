@@ -1,10 +1,10 @@
-public enum CallApplication: String, CaseIterable, Sendable {
+enum CallApplication: String, CaseIterable, Sendable {
     case weChat
     case signal
     case whatsApp
     case telegram
 
-    public var displayName: String {
+    var displayName: String {
         switch self {
         case .weChat:
             "微信"
@@ -17,11 +17,11 @@ public enum CallApplication: String, CaseIterable, Sendable {
         }
     }
 
-    public var primaryBundleIdentifier: String {
+    var primaryBundleIdentifier: String {
         bundleIdentifiers[0]
     }
 
-    public var bundleIdentifiers: [String] {
+    var bundleIdentifiers: [String] {
         switch self {
         case .weChat:
             ["com.tencent.xinWeChat"]
@@ -37,7 +37,7 @@ public enum CallApplication: String, CaseIterable, Sendable {
         }
     }
 
-    public static func matching(bundleIdentifier: String) -> Self? {
+    static func matching(bundleIdentifier: String) -> Self? {
         allCases.first { $0.rootBundleIdentifier(for: bundleIdentifier) != nil }
     }
 

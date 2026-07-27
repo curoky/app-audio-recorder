@@ -1,20 +1,17 @@
 import Foundation
-import Logging
 
-public enum CallRecordingEvent: Sendable {
+enum CallRecordingEvent: Sendable {
     case started(outputURL: URL)
     case finished(RecordingResult)
     case failed(message: String)
 }
 
 /// 监听目标 app 的麦克风活动，并为每段活动自动管理一段录制。
-public actor CallRecordingWatcher {
+actor CallRecordingWatcher {
     private let application: CapturableApplication
     private let outputDirectory: URL
-    private let sampleRate: Int
-    private let channelCount: Int
-    private let silenceSeconds: Double
-    private let logger: Logger
+    private let recordingConfiguration: RecordingConfiguration
+    private let endDelay: CallEndDelay
 
     private var isRunning = false
     private var monitor: CallActivityMonitor?
@@ -25,34 +22,29 @@ public actor CallRecordingWatcher {
     private var lastFinishedResult: RecordingResult?
     private var continuation: AsyncStream<CallRecordingEvent>.Continuation?
 
-    public init(
+    init(
         application: CapturableApplication,
         outputDirectory: URL,
-        sampleRate: Int = 48_000,
-        channelCount: Int = 2,
-        silenceSeconds: Double = 2,
-        logger: Logger = AppLog.logger("watch")
+        recordingConfiguration: RecordingConfiguration,
+        endDelay: CallEndDelay
     ) {
         self.application = application
         self.outputDirectory = outputDirectory
-        self.sampleRate = sampleRate
-        self.channelCount = channelCount
-        self.silenceSeconds = silenceSeconds
-        self.logger = logger
+        var configuration = recordingConfiguration
+        configuration.capturesMicrophone = true
+        self.recordingConfiguration = configuration
+        self.endDelay = endDelay
     }
 
     /// 开始监听并立即返回事件流；同一实例不可重复并发启动。
-    public func start() async throws -> AsyncStream<CallRecordingEvent> {
-        guard !isRunning, continuation == nil,
-              AudioFormatConstraints.sampleRates.contains(sampleRate),
-              AudioFormatConstraints.channelCounts.contains(channelCount),
-              silenceSeconds.isFinite,
-              silenceSeconds >= 0
-        else {
-            throw RecorderError.invalidConfiguration
+    func start() async throws -> AsyncStream<CallRecordingEvent> {
+        guard !isRunning, continuation == nil else {
+            throw RecorderError.operationAlreadyRunning
         }
         try RecordingFiles.validateOutputDirectory(outputDirectory)
-        _ = try await Recorder.application(matching: application.bundleIdentifier)
+        _ = try await Recorder.runningApplication(
+            bundleIdentifier: application.bundleIdentifier
+        )
         try await MicrophonePermission.ensureAuthorized()
 
         let (events, continuation) = AsyncStream<CallRecordingEvent>.makeStream(
@@ -60,8 +52,7 @@ public actor CallRecordingWatcher {
         )
         let monitor = CallActivityMonitor(
             targetBundleID: application.bundleIdentifier,
-            silenceSeconds: silenceSeconds,
-            logger: logger
+            endDelay: endDelay
         )
         self.continuation = continuation
         self.monitor = monitor
@@ -78,7 +69,7 @@ public actor CallRecordingWatcher {
     }
 
     /// 停止监听；若正在录制，先完成容器收尾并返回该段结果。
-    public func stop() async -> RecordingResult? {
+    func stop() async -> RecordingResult? {
         guard isRunning || session != nil || finishingTask != nil else { return nil }
         isRunning = false
         lastFinishedResult = nil
@@ -108,8 +99,8 @@ public actor CallRecordingWatcher {
     private func startRecording() async {
         guard session == nil else { return }
         do {
-            let currentApplication = try await Recorder.application(
-                matching: application.bundleIdentifier
+            let currentApplication = try await Recorder.runningApplication(
+                bundleIdentifier: application.bundleIdentifier
             )
             let outputURL = RecordingFiles.uniqueContainerURL(
                 applicationName: application.name,
@@ -118,11 +109,7 @@ public actor CallRecordingWatcher {
             let started = try await Recorder.startRecording(
                 application: currentApplication,
                 outputURL: outputURL,
-                capturesMicrophone: true,
-                sampleRate: sampleRate,
-                channelCount: channelCount,
-                overwritesExistingOutput: false,
-                logger: logger
+                configuration: recordingConfiguration
             )
 
             guard isRunning else {

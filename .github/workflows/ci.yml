@@ -34,7 +34,7 @@ jobs:
       - name: Assemble app bundle
         run: |
           mkdir -p "$APP_BUNDLE/Contents/MacOS"
-          cp .build/release/app-audio-recorder-gui "$APP_BUNDLE/Contents/MacOS/"
+          cp .build/release/app-audio-recorder "$APP_BUNDLE/Contents/MacOS/"
           cp Support/Info.plist "$APP_BUNDLE/Contents/"
           /usr/bin/plutil -lint "$APP_BUNDLE/Contents/Info.plist"
           /usr/bin/codesign --force --sign - "$APP_BUNDLE"

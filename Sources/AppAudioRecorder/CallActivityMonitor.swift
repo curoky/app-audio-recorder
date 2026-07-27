@@ -1,7 +1,7 @@
 import AppKit
 import CoreAudio
 import Foundation
-import Logging
+import OSLog
 
 /// 监听目标 app 是否正在使用麦克风（语音/视频通话的强特征），把「开始/停止用麦克风」
 /// 抽象成一条**去抖后**的 `AsyncStream<Bool>`：`true`=通话开始，`false`=通话结束。
@@ -19,9 +19,8 @@ import Logging
 final class CallActivityMonitor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "app-audio-recorder.call-monitor")
     private let targetBundleMatcher: ApplicationBundleMatcher
-    /// 麦克风静默多久后才判定通话结束（去抖窗口，秒）。
-    private let silenceSeconds: Double
-    private let logger: Logger
+    private let endDelay: CallEndDelay
+    private let logger = AppLog.logger("call-monitor")
 
     private let events: AsyncStream<Bool>
     private let continuation: AsyncStream<Bool>.Continuation
@@ -34,12 +33,11 @@ final class CallActivityMonitor: @unchecked Sendable {
     /// 等待静默确认的停止任务；期间若麦克风又活动则取消。
     private var pendingStop: DispatchWorkItem?
 
-    init(targetBundleID: String, silenceSeconds: Double, logger: Logger) {
+    init(targetBundleID: String, endDelay: CallEndDelay) {
         self.targetBundleMatcher = ApplicationBundleMatcher(
             targetBundleIdentifier: targetBundleID
         )
-        self.silenceSeconds = silenceSeconds
-        self.logger = logger
+        self.endDelay = endDelay
         // 布尔事件极小且低频，用 unbounded 保证不丢失任何一次翻转。
         (self.events, self.continuation) = AsyncStream.makeStream(bufferingPolicy: .unbounded)
     }
@@ -85,7 +83,7 @@ final class CallActivityMonitor: @unchecked Sendable {
         if status == noErr {
             listListenerBlock = block
         } else {
-            logger.warning("注册进程列表监听失败", metadata: ["status": .stringConvertible(status)])
+            logger.warning("注册进程列表监听失败：\(status)")
         }
     }
 
@@ -119,10 +117,7 @@ final class CallActivityMonitor: @unchecked Sendable {
         if status == noErr {
             inputListeners[objectID] = block
         } else {
-            logger.warning("注册麦克风活动监听失败", metadata: [
-                "object": .stringConvertible(objectID),
-                "status": .stringConvertible(status),
-            ])
+            logger.warning("注册麦克风活动监听失败：对象 \(objectID)，状态 \(status)")
         }
     }
 
@@ -155,7 +150,7 @@ final class CallActivityMonitor: @unchecked Sendable {
                 continuation.yield(false)
             }
             pendingStop = work
-            queue.asyncAfter(deadline: .now() + silenceSeconds, execute: work)
+            queue.asyncAfter(deadline: .now() + endDelay.rawValue, execute: work)
         }
     }
 
@@ -176,7 +171,7 @@ final class CallActivityMonitor: @unchecked Sendable {
         let systemObject = AudioObjectID(kAudioObjectSystemObject)
         var dataSize: UInt32 = 0
         guard AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &dataSize) == noErr,
-              dataSize > 0
+            dataSize > 0
         else { return [] }
 
         let count = Int(dataSize) / MemoryLayout<AudioObjectID>.stride
@@ -189,7 +184,7 @@ final class CallActivityMonitor: @unchecked Sendable {
 
     private func matchesTarget(_ objectID: AudioObjectID) -> Bool {
         guard let pid = processPID(objectID),
-              let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
+            let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier
         else { return false }
         return targetBundleMatcher.matches(bundleID)
     }
