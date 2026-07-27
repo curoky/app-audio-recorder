@@ -7,7 +7,7 @@
 macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
-- Swift 依赖：唯一依赖 `swift-argument-parser`（构建 CLI），编译进单可执行文件。
+- Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-log`（结构化日志，见[日志与输出流](#日志与输出流)）。均编译进单可执行文件。
 - 外部命令：混音由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**）离线完成；可执行文件本身（`record`/`list`）不依赖任何外部命令。
 - 产物：单可执行文件 `app-audio-recorder`（只含 `record`/`list`；混音是编译产物之外、Taskfile 里的便捷命令）。
 
@@ -44,6 +44,8 @@ task clean              # 清理构建产物
 | `--sample-rate` | `48000` | 采样率（1...48000 Hz） |
 | `--channels` | `2` | 声道数（仅支持 1=单声道、2=立体声） |
 | `--duration` | `0` | 最长录制秒数（须 ≥ 0）；0 表示不限，直到 Ctrl-C |
+| `--verbose` / `-v` | 关 | 输出 debug 级诊断日志（stderr） |
+| `--quiet` / `-q` | 关 | 只输出 error，静默进度/状态日志（stderr） |
 
 ```bash
 app-audio-recorder record --app WeChat                 # 按名称关键字指定
@@ -109,6 +111,7 @@ CLI 入口聚合两个子命令（`list`/`record`），捕获逻辑与内容解�
 | [PathSupport.swift](Sources/AppAudioRecorder/PathSupport.swift) | `URL(expandingPath:)`：命令行路径的 `~` 展开 |
 | [InterruptSignal.swift](Sources/AppAudioRecorder/InterruptSignal.swift) | 把 SIGINT（Ctrl-C）封装成可 await 的信号 |
 | [RecorderError.swift](Sources/AppAudioRecorder/RecorderError.swift) | 可预期错误枚举，遵从 `LocalizedError`，`errorDescription` 为面向用户的中文提示 |
+| [AppLog.swift](Sources/AppAudioRecorder/AppLog.swift) | `swift-log` 接线：`LoggingOptions`（`--verbose`/`--quiet` 全局选项）+ 幂等 `bootstrap`（stderr handler、按 flag 定级别）+ `AppLog.logger(_:)` 派生子 logger |
 | [Taskfile.yml](Taskfile.yml) `merge` 任务 | 混音（**非 Swift 代码**）：裸 `ffmpeg` 用 `[0:a:0][0:a:1]` 引用容器两条轨离线混音成 merged WAV |
 
 ### 捕获链路
@@ -118,6 +121,15 @@ CLI 入口聚合两个子命令（`list`/`record`），捕获逻辑与内容解�
 3. `SCStream` 配置 `capturesAudio = true`、`excludesCurrentProcessAudio = true`；录麦克风时再开 `captureMicrophone = true`，两路（`.audio`/`.microphone`）共享同一采样队列，按类型分别写入容器的 app / mic 轨。
 4. 引擎在采样队列上把 `CMSampleBuffer` 连同其 PTS 转交 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift)，由 `AVAssetWriterInput` 编码成 ALAC 无损轨写入单个 `.m4a` 容器；会话起点取各预期轨首帧 PTS 的较小值，从而保留轨间起始偏移。
 5. 混音是**独立环节，且不在可执行文件里**：`record` 结束只留一个多轨容器；需要合并时用 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务把容器直接喂给 `ffmpeg`（`[0:a:0][0:a:1]` 引用两条轨 → `amix` 纯和 + `volume` 缩放），无需先 demux。流式混音由 ffmpeg 内部处理，内存占用不随录音时长增长；混音计算在 `ffmpeg` 独立进程里完成，与录制/编译产物完全解耦。
+
+### 日志与输出流
+
+用 `swift-log` 做结构化日志，接线集中在 [AppLog.swift](Sources/AppAudioRecorder/AppLog.swift)。核心约定是 **stdout / stderr 分流**，遵循 Unix CLI 惯例，让输出可被管道干净消费：
+
+- **stdout 只放数据**：`list` 的 app 列表、`record` 产物容器路径——可直接 `| grep`/脚本消费，不被日志污染。
+- **stderr 放诊断/状态/进度/警告**：全部走 `Logger`（`StreamLogHandler.standardError`，带时间戳、级别、`app-audio-recorder.<module>` label 与结构化 metadata）。
+- **级别开关**：`--verbose`/`-v` 放开到 debug，`--quiet`/`-q` 只留 error，默认 info。由 `LoggingOptions`（`@OptionGroup` 复用于各子命令）承载，子命令 `run()` 起点调用 `bootstrap()` 幂等设置全局 handler。
+- **Logger 作为 `Sendable` 值注入**，不建全局可变单例（契合并发规则）：`RecordCommand` 把 logger 传入 [AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift)，引擎在原先被吞掉、只转成泛化 `.audioCaptureFailed` 的 catch 点用 `logger.error` 记录**原始错误**（启动失败、stopCapture 报错、写盘异常、容器收尾失败），补齐排查能力。
 
 ## 关键约束（改代码前务必注意）
 

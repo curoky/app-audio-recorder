@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreMedia
+import Logging
 import ScreenCaptureKit
 
 /// 基于 ScreenCaptureKit 的按 app 音频捕获引擎，可选同时捕获麦克风输入。
@@ -19,6 +20,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
     private let outputURL: URL
+    private let logger: Logger
     private var writer: AudioContainerWriter?
     private let failureEvents: AsyncStream<Void>
     private let failureContinuation: AsyncStream<Void>.Continuation
@@ -28,16 +30,19 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     /// - Parameters:
     ///   - outputURL: 多轨容器落盘路径。
     ///   - capturesMicrophone: 是否额外捕获麦克风并写入第二条轨。
+    ///   - logger: 诊断日志（stderr）；记录捕获生命周期与被泛化前的原始错误。
     init(
         outputURL: URL,
         capturesMicrophone: Bool,
         sampleRate: Int = 48_000,
-        channelCount: Int = 2
+        channelCount: Int = 2,
+        logger: Logger = AppLog.logger("capture")
     ) {
         self.outputURL = outputURL
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.capturesMicrophone = capturesMicrophone
+        self.logger = logger
         (self.failureEvents, self.failureContinuation) = AsyncStream.makeStream(
             bufferingPolicy: .bufferingNewest(1)
         )
@@ -86,7 +91,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             try await stream.startCapture()
             self.stream = stream
+            logger.debug("捕获已启动", metadata: [
+                "sampleRate": .stringConvertible(sampleRate),
+                "channels": .stringConvertible(channelCount),
+                "mic": .stringConvertible(capturesMicrophone),
+            ])
         } catch {
+            logger.error("启动捕获失败", metadata: ["error": .string(String(describing: error))])
             throw .audioCaptureFailed
         }
     }
@@ -102,6 +113,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             do {
                 try await stream.stopCapture()
             } catch {
+                // 即便停止失败也要走完容器收尾以写出有效文件；记录原始错误便于排查。
+                logger.warning("停止捕获时报错，仍继续收尾容器", metadata: ["error": .string(String(describing: error))])
                 stopError = error
             }
             self.stream = nil
@@ -117,6 +130,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         do {
             try await writerToFinish?.completeWriting()
         } catch {
+            logger.error("容器收尾写入失败", metadata: ["error": .string(String(describing: error))])
             stopError = stopError ?? error
         }
 
@@ -126,6 +140,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             throw .audioCaptureFailed
         }
+        logger.debug("容器已写出", metadata: ["output": .string(outputURL.path)])
     }
 
     // MARK: - SCStreamOutput（仅在 sampleQueue 上回调）
@@ -162,6 +177,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private func recordFailure(_ error: Error) {
         guard writeError == nil else { return }
         writeError = error
+        logger.error("捕获/写盘异常，将停止录制", metadata: ["error": .string(String(describing: error))])
         failureContinuation.yield()
     }
 }
