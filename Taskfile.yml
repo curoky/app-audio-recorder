@@ -48,9 +48,21 @@ tasks:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} record {{.CLI_ARGS}}
 
   merge:
-    desc: 把多轨容器（record 产出的 .m4a）内两条轨混音成一个 WAV；参数用 -- 透传（如 task merge -- 微信-2026-07-27.m4a）
+    desc: 用 ffmpeg 把多轨容器（record 产出的 .m4a）内 app+mic 两条轨离线混音成 <基名>-merged.wav；容器路径用 -- 传（如 task merge -- 微信-2026-07-27.m4a），改增益用 GAIN=0.5
+    silent: true
+    vars:
+      # 混音增益：两路相加前统一乘的系数。0.5 保证不削波，0.707≈-3dB 折中，1.0 等量叠加。
+      GAIN: '{{.GAIN | default "0.707"}}'
+      OUT: '{{.CLI_ARGS | trimSuffix ".m4a"}}-merged.wav'
     cmds:
-      - swift run {{.SANDBOX_FLAG}} {{.BIN}} merge {{.CLI_ARGS}}
+      # 两条轨格式恒等（AudioContainerWriter 用同一份 settings），amix 自然跟随其采样率/声道，无需 -ar/-ac 探测。
+      # normalize=0 + volume=<gain> 即 gain*(app+mic) 纯和，pcm_s16le 饱和量化即硬限幅。
+      # 输入缺失/为空、单轨、ffmpeg 不存在等错误交给 ffmpeg/shell 自己报（非零退出即中止），不在此重复守卫。
+      - >-
+        /opt/sb/bin/ffmpeg -hide_banner -loglevel error -nostdin -y -i "{{.CLI_ARGS}}"
+        -filter_complex "[0:a:0][0:a:1]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,volume={{.GAIN}}[out]"
+        -map "[out]" -c:a pcm_s16le -- "{{.OUT}}"
+      - echo "已保存：{{.OUT}}"
 
   install:
     desc: release 构建并安装到 {{.INSTALL_DIR}}

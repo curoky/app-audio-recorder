@@ -4,12 +4,12 @@
 
 ## 项目概述
 
-macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给独立的 `merge` 子命令离线混音，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
+macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
-- Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-subprocess`（async-native 启动 `ffmpeg` 子进程）。均编译进单可执行文件。
-- 外部命令：`merge` 子命令固定调用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**，路径见 [FFmpegMerger.ffmpegPath](Sources/AppAudioRecorder/FFmpegMerger.swift#L15-L16)）；`record`/`list` 不需要。
-- 产物：单可执行文件 `app-audio-recorder`。
+- Swift 依赖：唯一依赖 `swift-argument-parser`（构建 CLI），编译进单可执行文件。
+- 外部命令：混音由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**）离线完成；可执行文件本身（`record`/`list`）不依赖任何外部命令。
+- 产物：单可执行文件 `app-audio-recorder`（只含 `record`/`list`；混音是编译产物之外、Taskfile 里的便捷命令）。
 
 ## 常用命令
 
@@ -22,14 +22,14 @@ task test               # 运行测试
 task list               # 列出可录音的运行中 app
 task record             # 录制（默认微信），Ctrl-C 结束
 task record -- --app WeChat --duration 30   # 参数用 -- 透传给可执行文件
-task merge -- a-app.wav a-mic.wav            # 离线混音
+task merge -- 微信-2026-07-27.m4a            # 用 ffmpeg 把容器内两条轨离线混音
 task install            # release 构建并安装到 /usr/local/bin
 task clean              # 清理构建产物
 ```
 
-底层就是 `swift build [-c release]` / `swift test` / `swift run app-audio-recorder <子命令>`，无 task 时可直接用。
+底层就是 `swift build [-c release]` / `swift test` / `swift run app-audio-recorder <子命令>`（`record`/`list`），无 task 时可直接用；混音则是 Taskfile 里一条裸 `ffmpeg` 命令，不属于可执行文件。
 
-- **测试**：`Tests/AppAudioRecorderTests/` 覆盖离线混音格式转换、时长和 CLI 参数校验；ScreenCaptureKit 实际捕获仍需带权限手工验证。
+- **测试**：`Tests/AppAudioRecorderTests/` 覆盖 CLI 参数校验；ScreenCaptureKit 实际捕获、`task merge` 混音仍需带权限/带样本手工验证。
 - **无 lint/format 配置**：沿用现有代码风格即可，不要擅自引入工具链或大规模重排。
 
 ### record 参数
@@ -55,23 +55,23 @@ app-audio-recorder record --duration 30                # 定时 30 秒后自动�
 
 `list` 会在微信所在行标注 `← 微信`（匹配 `com.tencent.xinWeChat`）。
 
-### merge 参数
+### merge（Taskfile 命令，非子命令）
 
-`merge` 用 `ffmpeg` 直接读 `record` 产出的**多轨容器**（轨 0=app、轨 1=mic），把两条轨离线混音成一个 WAV（见 [MergeCommand.swift](Sources/AppAudioRecorder/MergeCommand.swift) 与 [FFmpegMerger.swift](Sources/AppAudioRecorder/FFmpegMerger.swift)，或 `app-audio-recorder merge --help`）。**无需先 demux**——ffmpeg 用 `[0:a:0][0:a:1]` 直接引用容器内两条轨：
+混音**不在可执行文件里**，而是 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务——一条裸 `ffmpeg` 命令，直接读 `record` 产出的**多轨容器**（轨 0=app、轨 1=mic），用 `[0:a:0][0:a:1]` 引用两条轨离线混音成一个 WAV（**无需先 demux**）。因为容器内两条轨格式恒等（见[输出格式约束](#关键约束改代码前务必注意)），`amix` 自然跟随其采样率/声道，无需探测强制：
 
-| 参数 | 默认 | 说明 |
+| 传参 | 默认 | 说明 |
 | --- | --- | --- |
-| `<container>` | 必填 | 输入多轨容器（`record` 产出的 `.m4a`，含 app + mic 两条轨），支持 `~` 展开 |
-| `--output` / `-o` | 容器同目录 `<容器基名>-merged.wav` | 输出 WAV 路径 |
-| `--gain` | `0.707` | 混音增益，两路相加前统一乘的有限系数（须 > 0）。`0.5` 保证不削波，`0.707`≈-3dB 折中，`1.0` 等量叠加 |
+| `-- <容器.m4a>` | 必填 | 输入多轨容器（`record` 产出的 `.m4a`，含 app + mic 两条轨），用 `--` 透传给 task |
+| `GAIN=<值>` | `0.707` | 混音增益，两路相加前统一乘的系数。`0.5` 保证不削波，`0.707`≈-3dB 折中，`1.0` 等量叠加 |
+
+输出固定为容器同目录 `<容器基名>-merged.wav`（不可自定义；需要别的路径直接照 Taskfile 里的 `ffmpeg` 模板手改）：
 
 ```bash
-app-audio-recorder merge 微信-2026-07-27.m4a                       # 产出 微信-2026-07-27-merged.wav
-app-audio-recorder merge 微信-2026-07-27.m4a -o ~/Desktop/mix.wav
-app-audio-recorder merge 微信-2026-07-27.m4a --gain 0.5            # 保证不削波
+task merge -- 微信-2026-07-27.m4a              # 产出 微信-2026-07-27-merged.wav
+task merge GAIN=0.5 -- 微信-2026-07-27.m4a     # 保证不削波
 ```
 
-只录 app 音频（`record --no-mic`）产出的是单轨容器，`merge` 会检测到只有一条音轨并直接报错——单轨无需合并。若仍要单独取出某条轨为 WAV，用 `ffmpeg -c copy` 无损 demux：
+只录 app 音频（`record --no-mic`）产出的是单轨容器，`ffmpeg` 引用 `[0:a:1]` 会报「matches no streams」并非零退出——单轨无需合并。若要单独取出某条轨为 WAV，用 `ffmpeg -c copy` 无损 demux：
 
 ```bash
 ffmpeg -i 微信-2026-07-27.m4a -map 0:a:0 -c copy 微信-app.wav   # 取 app 轨
@@ -80,9 +80,9 @@ ffmpeg -i 微信-2026-07-27.m4a -map 0:a:1 -c copy 微信-mic.wav   # 取 mic �
 
 ### 输出文件
 
-- **`record` 录麦克风（默认）**：产出**单个多轨容器** `<base>.m4a`，内含两条 ALAC 无损轨——轨 0 为 app 音频、轨 1 为麦克风，轨间起始偏移由容器时间线保存。需要混音直接把容器喂给 `merge`；需要单独取出某条轨为 WAV 用 `ffmpeg -c copy` demux。
-- **`record --no-mic`**：产出单轨容器 `<base>.m4a`（仅 app 音频一条 ALAC 轨）；`merge` 对其报错（无第二条轨可混）。
-- **`merge`**：读多轨容器产出 `<容器基名>-merged.wav`（两条轨离线混音）。
+- **`record` 录麦克风（默认）**：产出**单个多轨容器** `<base>.m4a`，内含两条 ALAC 无损轨——轨 0 为 app 音频、轨 1 为麦克风，轨间起始偏移由容器时间线保存。需要混音直接把容器喂给 `task merge`；需要单独取出某条轨为 WAV 用 `ffmpeg -c copy` demux。
+- **`record --no-mic`**：产出单轨容器 `<base>.m4a`（仅 app 音频一条 ALAC 轨）；`task merge` 对其报错（无第二条轨可混）。
+- **`task merge`**：读多轨容器产出 `<容器基名>-merged.wav`（两条轨离线混音）。
 - 其中 `<base>` 由 `record --output` 指定（去掉 `.m4a`/`.wav` 扩展名），否则为当前目录 `<app名>-<时间戳>`。
 
 ## 运行前提：权限
@@ -95,22 +95,21 @@ ffmpeg -i 微信-2026-07-27.m4a -map 0:a:1 -c copy 微信-mic.wav   # 取 mic �
 
 ## 架构
 
-CLI 入口聚合三个子命令，捕获逻辑与内容解析分层：
+CLI 入口聚合两个子命令（`list`/`record`），捕获逻辑与内容解析分层；混音不在可执行文件内，由 Taskfile 的 `merge` 任务调 `ffmpeg` 完成：
 
 | 文件 | 职责 |
 | --- | --- |
 | [AppAudioRecorder.swift](Sources/AppAudioRecorder/AppAudioRecorder.swift) | `@main` 顶层命令，聚合子命令，默认子命令为 `record` |
 | [ListCommand.swift](Sources/AppAudioRecorder/ListCommand.swift) | `list`：打印可捕获音频的运行中 app |
 | [RecordCommand.swift](Sources/AppAudioRecorder/RecordCommand.swift) | `record`：参数解析、派生输出容器路径、启动引擎、Ctrl-C/定时停止 |
-| [MergeCommand.swift](Sources/AppAudioRecorder/MergeCommand.swift) | `merge`：参数/路径校验，调用 `ffmpeg` 离线混音（与录制解耦） |
 | [ContentResolver.swift](Sources/AppAudioRecorder/ContentResolver.swift) | 枚举 app、按名称/bundleId 匹配、构建只含目标 app 的过滤器 |
 | [MicrophonePermission.swift](Sources/AppAudioRecorder/MicrophonePermission.swift) | 麦克风权限查询与申请 |
 | [AudioCaptureEngine.swift](Sources/AppAudioRecorder/AudioCaptureEngine.swift) | `SCStream` 捕获生命周期与样本转发（app + 可选麦克风双路，不含写盘逻辑） |
 | [AudioContainerWriter.swift](Sources/AppAudioRecorder/AudioContainerWriter.swift) | `AVAssetWriter` 把 app/mic 样本连同 PTS 写入单个多轨容器（`.m4a` / ALAC），保留轨间起始偏移 |
-| [FFmpegMerger.swift](Sources/AppAudioRecorder/FFmpegMerger.swift) | 读多轨容器轨 0 格式、构造 `ffmpeg` 参数并启动子进程，把容器内 app/mic 两条轨混音成 merged WAV（由 `merge` 命令调用） |
 | [PathSupport.swift](Sources/AppAudioRecorder/PathSupport.swift) | `URL(expandingPath:)`：命令行路径的 `~` 展开 |
 | [InterruptSignal.swift](Sources/AppAudioRecorder/InterruptSignal.swift) | 把 SIGINT（Ctrl-C）封装成可 await 的信号 |
 | [RecorderError.swift](Sources/AppAudioRecorder/RecorderError.swift) | 可预期错误枚举，遵从 `LocalizedError`，`errorDescription` 为面向用户的中文提示 |
+| [Taskfile.yml](Taskfile.yml) `merge` 任务 | 混音（**非 Swift 代码**）：裸 `ffmpeg` 用 `[0:a:0][0:a:1]` 引用容器两条轨离线混音成 merged WAV |
 
 ### 捕获链路
 
@@ -118,18 +117,18 @@ CLI 入口聚合三个子命令，捕获逻辑与内容解析分层：
 2. `SCContentFilter(display:including:[目标 app])` 构建**只含目标 app** 的过滤器，从而只捕获它的音频。
 3. `SCStream` 配置 `capturesAudio = true`、`excludesCurrentProcessAudio = true`；录麦克风时再开 `captureMicrophone = true`，两路（`.audio`/`.microphone`）共享同一采样队列，按类型分别写入容器的 app / mic 轨。
 4. 引擎在采样队列上把 `CMSampleBuffer` 连同其 PTS 转交 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift)，由 `AVAssetWriterInput` 编码成 ALAC 无损轨写入单个 `.m4a` 容器；会话起点取各预期轨首帧 PTS 的较小值，从而保留轨间起始偏移。
-5. 混音是**独立环节**：`record` 结束只留一个多轨容器；需要合并时把容器直接喂给 `merge`，无需先 demux。[FFmpegMerger](Sources/AppAudioRecorder/FFmpegMerger.swift) 用 `AVURLAsset` 读容器轨 0（app）格式并校验至少两条音轨，构造 `ffmpeg` 参数（`[0:a:0][0:a:1]` 引用两条轨 → `amix` 纯和 + `volume` 缩放）并启动子进程，流式混音由 ffmpeg 内部处理，内存占用不随录音时长增长。
+5. 混音是**独立环节，且不在可执行文件里**：`record` 结束只留一个多轨容器；需要合并时用 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务把容器直接喂给 `ffmpeg`（`[0:a:0][0:a:1]` 引用两条轨 → `amix` 纯和 + `volume` 缩放），无需先 demux。流式混音由 ffmpeg 内部处理，内存占用不随录音时长增长；混音计算在 `ffmpeg` 独立进程里完成，与录制/编译产物完全解耦。
 
 ## 关键约束（改代码前务必注意）
 
 - **线程模型**：[AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift) 的可变写入状态（`writer`/`writeError`）与 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 的全部状态都只在串行队列 `sampleQueue` 上访问——`SCStreamOutput` 回调注册到该队列，`SCStreamDelegate` 错误回调也显式转投该队列。app 与麦克风两路共用同一 `sampleQueue`，按 `SCStreamOutputType` 分发到容器的对应轨。引擎的 `@unchecked Sendable` 是为桥接这套回调式 API 的**有依据**标注（`AudioContainerWriter` 因此可保持 `nonisolated` 非 Sendable、无需加锁）。**新增可变写入状态必须走同一队列**，否则破坏该前提。
 - **容器收尾时机**：`stop()` 先在 `sampleQueue` 上同步调用 `writer.finalizeInputs()`（标记所有输入结束，此后不再有样本追加），再在队列之外 `await writer.completeWriting()` 触发 `AVAssetWriter.finishWriting` 把容器 flush 到磁盘。异步收尾必须在标记结束、确无并发追加后进行；即使 `SCStream.stopCapture()` 失败也要走完收尾以写出有效容器。
-- **录制与混音解耦**：`record` 只负责产出多轨容器，**不做混音**；合并由独立的 `merge` 子命令按需触发（直接读容器，无需先 demux）。[FFmpegMerger](Sources/AppAudioRecorder/FFmpegMerger.swift) 只负责构造参数并用 `swift-subprocess` 启动 `ffmpeg` 子进程，混音计算在**独立进程**里完成，不占用本进程的协作/并发线程池；`MergeCommand.run` 因此只是普通 `async`（await 子进程），无需 `@concurrent`。
-- **输出格式**：`record` 落盘固定为 `.m4a` 多轨容器，音轨为 ALAC 无损（16-bit 量化，与旧的 16-bit PCM 精度一致）；采样率/声道由 `--sample-rate`/`--channels` 决定（默认 48kHz 立体声）。`merge` 输出 16-bit PCM WAV（`pcm_s16le`），显式用 `-ar/-ac` 强制跟随第一路（app）音轨的采样率/声道（amix 自身格式协商**不保证**跟随第一路）；`amix=duration=longest` 使时长取较长者、较短一路缺失部分补静音，`normalize=0` + `volume=<gain>` 等价于 `gain*(app+mic)` 纯和缩放，`pcm_s16le` 编码的饱和量化即硬限幅。
+- **录制与混音解耦**：`record` 只负责产出多轨容器，**不做混音**；合并由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务按需触发——一条裸 `ffmpeg` 命令直接读容器（无需先 demux），混音计算在 `ffmpeg` **独立进程**里完成，不占用本进程任何线程池，也**不进编译产物**。因此可执行文件本身零外部命令依赖、无 `swift-subprocess`；改混音行为直接改 Taskfile 里的 `ffmpeg` 滤镜链，不碰 Swift 代码。
+- **输出格式**：`record` 落盘固定为 `.m4a` 多轨容器，音轨为 ALAC 无损（16-bit 量化，与旧的 16-bit PCM 精度一致）；采样率/声道由 `--sample-rate`/`--channels` 决定（默认 48kHz 立体声）。`task merge` 输出 16-bit PCM WAV（`pcm_s16le`）：容器内 app 轨与 mic 轨由 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 用**同一份 settings** 写入，故**两轨格式恒等**，`amix` 自然跟随其采样率/声道，无需 `-ar/-ac` 强制（这也是省掉旧 Swift 版 ffprobe 探测的依据）；`amix=inputs=2:duration=longest` 使时长取较长者、较短一路缺失部分补静音，`normalize=0` + `volume=<gain>` 等价于 `gain*(app+mic)` 纯和缩放，`pcm_s16le` 编码的饱和量化即硬限幅。
 
 ## 已知限制与扩展点
 
-- **麦克风混录**：`record` 默认同时录麦克风，与 app 音频作为两条 ALAC 轨写入同一 `.m4a` 容器（`--no-mic` 回到单轨容器）；合并是独立的 `merge` 命令（**固定调用 `/opt/sb/bin/ffmpeg`，不走 `PATH`**，直接读容器内两条轨，无需先 demux），离线按 `--gain` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要可在 `FFmpegMerger` 的滤镜链里加 `loudnorm`/`sidechaincompress` 等 ffmpeg 滤镜。
+- **麦克风混录**：`record` 默认同时录麦克风，与 app 音频作为两条 ALAC 轨写入同一 `.m4a` 容器（`--no-mic` 回到单轨容器）；合并是 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务（**固定调用 `/opt/sb/bin/ffmpeg`，不走 `PATH`**，直接读容器内两条轨，无需先 demux），离线按 `GAIN` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要可在 Taskfile 里 `ffmpeg` 的滤镜链上加 `loudnorm`/`sidechaincompress` 等 ffmpeg 滤镜。
 - **时间对齐**：容器按各轨首帧 PTS 保留起始偏移，两路共享 SCStream 时钟时首帧通常同刻（offset 0）；若首帧错位则体现为轨道非零 `start_time`，demux 出的 WAV **不携带**该偏移（WAV 无时间戳），需要精确对齐混音时应从容器读 `start_time` 再喂 `ffmpeg` 的 `adelay`/`-itsoffset`。
 - **微信 bundleId 硬编码**为 `com.tencent.xinWeChat`（见 [ContentResolver.wechatBundleID](Sources/AppAudioRecorder/ContentResolver.swift#L7)）；版本不同则需 `list` 查到后用 `--app` 指定。
 - **分发**：作为独立 app 分发时建议带 `Info.plist`（`NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription`）与签名，以获得更稳定的授权体验。

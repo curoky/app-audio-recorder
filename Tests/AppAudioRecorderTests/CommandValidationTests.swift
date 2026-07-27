@@ -11,10 +11,4 @@ final class CommandValidationTests: XCTestCase {
     func testRecordRejectsBlankAppQuery() {
         XCTAssertThrowsError(try RecordCommand.parse(["--app", " \n "]))
     }
-
-    func testMergeRejectsNonFiniteGain() {
-        XCTAssertThrowsError(
-            try MergeCommand.parse(["app.wav", "mic.wav", "--gain", "inf"])
-        )
-    }
 }
