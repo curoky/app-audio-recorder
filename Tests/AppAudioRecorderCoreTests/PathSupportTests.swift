@@ -1,6 +1,6 @@
 import Foundation
 import XCTest
-@testable import AppAudioRecorder
+@testable import AppAudioRecorderCore
 
 final class PathSupportTests: XCTestCase {
     func testUniqueFileUsesFirstAvailableSuffix() throws {
@@ -19,31 +19,28 @@ final class PathSupportTests: XCTestCase {
         XCTAssertEqual(third.lastPathComponent, "call-3.m4a")
     }
 
-    func testWatchAcceptsWritableDirectory() throws {
+    func testAcceptsWritableDirectory() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let command = try WatchCommand.parse(["--output-dir", directory.path])
-        XCTAssertEqual(try command.outputDirectory(), directory)
+        XCTAssertNoThrow(try RecordingFiles.validateOutputDirectory(directory))
     }
 
-    func testWatchRejectsRegularFileAsOutputDirectory() throws {
+    func testRejectsRegularFileAsOutputDirectory() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let file = directory.appendingPathComponent("not-a-directory")
         try Data().write(to: file)
 
-        let command = try WatchCommand.parse(["--output-dir", file.path])
-        XCTAssertThrowsError(try command.outputDirectory())
+        XCTAssertThrowsError(try RecordingFiles.validateOutputDirectory(file))
     }
 
-    func testWatchRejectsMissingOutputDirectory() throws {
+    func testRejectsMissingOutputDirectory() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let missing = directory.appendingPathComponent("missing", isDirectory: true)
 
-        let command = try WatchCommand.parse(["--output-dir", missing.path])
-        XCTAssertThrowsError(try command.outputDirectory())
+        XCTAssertThrowsError(try RecordingFiles.validateOutputDirectory(missing))
     }
 
     func testExpandingPathExpandsHomeDirectory() {

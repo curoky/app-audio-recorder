@@ -1,3 +1,4 @@
+import AppAudioRecorderCore
 import ArgumentParser
 import Foundation
 import Logging
@@ -9,7 +10,7 @@ struct RecordCommand: AsyncParsableCommand {
     )
 
     @Option(name: [.short, .long], help: "目标 app 的名称关键字或 bundleId，默认微信。")
-    var app: String = ContentResolver.wechatBundleID
+    var app: String = Recorder.defaultBundleIdentifier
 
     @Option(name: [.short, .long], help: "输出容器基础路径，默认当前目录下带时间戳的文件（产出 .m4a）。")
     var output: String?
@@ -47,56 +48,52 @@ struct RecordCommand: AsyncParsableCommand {
         logging.bootstrap()
         let logger = AppLog.logger("record")
 
-        let targetApp = try await ContentResolver.findApp(matching: app)
-        let filter = try await ContentResolver.filter(for: targetApp)
-        let outputURL = try containerURL(appName: targetApp.applicationName)
-
-        if mic {
-            // 录麦克风前先确保授权，避免录到一半才失败。
-            try await MicrophonePermission.ensureAuthorized()
-        }
-
-        let engine = AudioCaptureEngine(
-            outputURL: outputURL,
-            capturesMicrophone: mic,
-            sampleRate: sampleRate,
-            channelCount: channels,
-            logger: logger
-        )
-
-        // 录制配置属诊断信息，走 logger（stderr）并带结构化 metadata。
+        let targetApp = try await Recorder.application(matching: app)
+        let outputURL = try containerURL(appName: targetApp.name)
         logger.info("准备录制", metadata: [
-            "app": .string(targetApp.applicationName),
+            "app": .string(targetApp.name),
             "bundleId": .string(targetApp.bundleIdentifier),
             "output": .string(outputURL.path),
             "sampleRate": .stringConvertible(sampleRate),
             "channels": .stringConvertible(channels),
             "mic": .stringConvertible(mic),
         ])
+        let session = try await Recorder.startRecording(
+            application: targetApp,
+            outputURL: outputURL,
+            capturesMicrophone: mic,
+            sampleRate: sampleRate,
+            channelCount: channels,
+            logger: logger
+        )
         if duration > 0 {
             logger.info("将录制 \(duration) 秒后自动停止（或按 Ctrl-C 提前结束）…")
         } else {
             logger.info("正在录制…按 Ctrl-C 结束并保存。")
         }
 
-        try await engine.start(filter: filter)
-        await waitForStop(duration: duration, engine: engine, logger: logger)
-        try await engine.stop()
+        await waitForStop(duration: duration, session: session, logger: logger)
+        let result = await session.stop()
 
-        let seconds = engine.recordedSeconds
-        logger.info("录制结束", metadata: ["seconds": .stringConvertible(String(format: "%.1f", seconds))])
+        logger.info("录制结束", metadata: [
+            "seconds": .stringConvertible(String(format: "%.1f", result.recordedSeconds)),
+        ])
         if mic {
             logger.debug("容器含 app / mic 两条 ALAC 轨，起始偏移已按首帧 PTS 对齐。")
         }
+        if let warning = result.warning {
+            logger.error("录制收尾失败", metadata: ["error": .string(warning)])
+            throw RecorderError.audioCaptureFailed
+        }
         // 产物路径是可被管道/脚本消费的结果，走 stdout。
-        print(outputURL.path)
+        print(result.outputURL.path)
     }
 
     /// 等待停止条件：Ctrl-C 或达到时长上限，谁先满足谁结束。
     ///
     /// 用 `TaskGroup` 让三个条件竞速：任一子任务先返回，就取消其余（`InterruptSignal`
     /// 的 `onTermination` 会随之关闭信号源），因此无需手动处理二者的竞争。
-    private func waitForStop(duration: Int, engine: AudioCaptureEngine, logger: Logger) async {
+    private func waitForStop(duration: Int, session: RecordingSession, logger: Logger) async {
         enum StopReason { case interrupt, timeout, failure }
 
         let reason = await withTaskGroup(of: StopReason.self) { group in
@@ -105,7 +102,7 @@ struct RecordCommand: AsyncParsableCommand {
                 return .interrupt
             }
             group.addTask {
-                await engine.waitForFailure()
+                await session.waitForFailure()
                 return .failure
             }
             if duration > 0 {

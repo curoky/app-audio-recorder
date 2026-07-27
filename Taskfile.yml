@@ -5,6 +5,9 @@ version: "3"
 vars:
   BIN: app-audio-recorder
   RELEASE_BIN: .build/release/{{.BIN}}
+  GUI_BIN: app-audio-recorder-gui
+  GUI_RELEASE_BIN: .build/release/{{.GUI_BIN}}
+  APP_BUNDLE: .build/release/App Audio Recorder.app
   INSTALL_DIR: /usr/local/bin
   # 在嵌套沙箱环境（如 IDE Agent）里，SwiftPM 自带的 sandbox-exec 会与外层沙箱冲突
   # （sandbox_apply: Operation not permitted）。禁用 SwiftPM 沙箱以规避；本地正常终端下加不加都可。
@@ -23,7 +26,7 @@ tasks:
       - swift build {{.SANDBOX_FLAG}}
 
   build:release:
-    desc: release 构建，产物在 .build/release/{{.BIN}}
+    desc: release 构建 CLI 与 GUI
     cmds:
       - swift build {{.SANDBOX_FLAG}} -c release
 
@@ -61,6 +64,30 @@ tasks:
     desc: 监听目标 app（默认微信）麦克风活动，通话开始自动录制、结束自动保存，Ctrl-C 退出；参数用 -- 透传（如 task watch -- --output-dir ~/Desktop/calls）
     cmds:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch {{.CLI_ARGS}}
+
+  app:bundle:
+    desc: 构建并组装 App Audio Recorder.app；SIGN_IDENTITY 可指定签名证书，默认 ad-hoc
+    deps: [build:release]
+    vars:
+      SIGN_IDENTITY: '{{.SIGN_IDENTITY | default "-"}}'
+    cmds:
+      - mkdir -p "{{.APP_BUNDLE}}/Contents/MacOS"
+      - cp "{{.GUI_RELEASE_BIN}}" "{{.APP_BUNDLE}}/Contents/MacOS/"
+      - cp Support/Info.plist "{{.APP_BUNDLE}}/Contents/"
+      - /usr/bin/plutil -lint "{{.APP_BUNDLE}}/Contents/Info.plist"
+      - /usr/bin/codesign --force --sign "{{.SIGN_IDENTITY}}" "{{.APP_BUNDLE}}"
+
+  app:run:
+    desc: 构建并打开 GUI app
+    deps: [app:bundle]
+    cmds:
+      - open "{{.APP_BUNDLE}}"
+
+  app:install:
+    desc: 安装 GUI app 到 /Applications
+    deps: [app:bundle]
+    cmds:
+      - /usr/bin/ditto "{{.APP_BUNDLE}}" "/Applications/App Audio Recorder.app"
 
   merge:
     desc: 用 ffmpeg 把多轨容器（record 产出的 .m4a）内 app+mic 两条轨离线混音成 <基名>-merged.wav；容器路径用 -- 传（如 task merge -- 微信-2026-07-27.m4a），改增益用 GAIN=0.5

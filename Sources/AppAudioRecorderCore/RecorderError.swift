@@ -1,16 +1,17 @@
 import Foundation
 
 /// 录音相关的可预期错误。遵从 `LocalizedError`，`errorDescription` 为面向用户的中文提示，
-/// 由 ArgumentParser 在命令边界直接打印，无需再包一层退出类型。
-enum RecorderError: LocalizedError {
+/// CLI 可直接打印，GUI 可直接展示。
+public enum RecorderError: LocalizedError, Sendable {
     case screenRecordingPermissionDenied
     case microphonePermissionDenied
     case appNotFound(query: String)
     case noAppsAvailable
     case audioCaptureFailed
     case outputNotWritable(path: String)
+    case invalidConfiguration
 
-    var errorDescription: String? {
+    public var errorDescription: String? {
         switch self {
         case .screenRecordingPermissionDenied:
             """
@@ -31,6 +32,8 @@ enum RecorderError: LocalizedError {
             "音频捕获意外停止，已保存停止前成功写入的内容。"
         case let .outputNotWritable(path):
             "输出路径不可写：\(path)"
+        case .invalidConfiguration:
+            "录制配置无效。"
         }
     }
 }

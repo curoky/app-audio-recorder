@@ -1,5 +1,5 @@
 import XCTest
-@testable import AppAudioRecorder
+@testable import AppAudioRecorderCLI
 
 final class CommandValidationTests: XCTestCase {
     func testRecordRejectsInvalidAudioConfiguration() {

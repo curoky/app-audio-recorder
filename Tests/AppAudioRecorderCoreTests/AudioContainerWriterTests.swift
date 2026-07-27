@@ -1,7 +1,7 @@
 import AVFoundation
 import CoreMedia
 import XCTest
-@testable import AppAudioRecorder
+@testable import AppAudioRecorderCore
 
 final class AudioContainerWriterTests: XCTestCase {
     func testRejectsSampleRateThatWouldCrashAVFoundation() throws {

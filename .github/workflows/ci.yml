@@ -4,11 +4,19 @@ on:
   push:
     branches:
       - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    name: Build
+    name: Test and build app
     runs-on: macos-26
+    env:
+      APP_BUNDLE: .build/release/App Audio Recorder.app
+      APP_ARCHIVE: .build/release/App-Audio-Recorder.zip
 
     steps:
       - name: Checkout
@@ -17,5 +25,25 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
+      - name: Test
+        run: swift test --disable-sandbox
+
       - name: Build release
         run: swift build --disable-sandbox --configuration release
+
+      - name: Assemble app bundle
+        run: |
+          mkdir -p "$APP_BUNDLE/Contents/MacOS"
+          cp .build/release/app-audio-recorder-gui "$APP_BUNDLE/Contents/MacOS/"
+          cp Support/Info.plist "$APP_BUNDLE/Contents/"
+          /usr/bin/plutil -lint "$APP_BUNDLE/Contents/Info.plist"
+          /usr/bin/codesign --force --sign - "$APP_BUNDLE"
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "$APP_ARCHIVE"
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Audio-Recorder
+          path: ${{ env.APP_ARCHIVE }}
+          if-no-files-found: error

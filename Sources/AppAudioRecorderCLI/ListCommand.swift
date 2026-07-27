@@ -1,3 +1,4 @@
+import AppAudioRecorderCore
 import ArgumentParser
 
 struct ListCommand: AsyncParsableCommand {
@@ -12,7 +13,7 @@ struct ListCommand: AsyncParsableCommand {
         logging.bootstrap()
         let logger = AppLog.logger("list")
 
-        let apps = try await ContentResolver.runningApps()
+        let apps = try await Recorder.applications()
         guard !apps.isEmpty else {
             logger.warning("没有可捕获音频的运行中 app。")
             return
@@ -22,8 +23,8 @@ struct ListCommand: AsyncParsableCommand {
         // app 列表是可被管道消费的数据，走 stdout；上面的状态提示走 logger（stderr）。
         print(String(repeating: "-", count: 60))
         for app in apps {
-            let marker = app.bundleIdentifier == ContentResolver.wechatBundleID ? " ← 微信" : ""
-            print("  \(app.applicationName)\(marker)")
+            let marker = app.bundleIdentifier == Recorder.defaultBundleIdentifier ? " ← 微信" : ""
+            print("  \(app.name)\(marker)")
             print("      bundleId: \(app.bundleIdentifier)   pid: \(app.processID)")
         }
     }
