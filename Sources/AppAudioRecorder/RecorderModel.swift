@@ -7,6 +7,7 @@ import Observation
 final class RecorderModel {
     var applications: [CapturableApplication] = []
     private(set) var selectedBundleIdentifier: String?
+    private(set) var monitoredBundleIdentifiers: Set<String>
     var recordingConfiguration = RecordingConfiguration()
     var outputDirectory: URL
     var errorMessage: String?
@@ -25,12 +26,16 @@ final class RecorderModel {
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let notifyCallDetected: @MainActor () -> Void
-    private var monitoredApplicationName: String?
-    private var isCallActive = false
+    private var monitoredApplicationsByBundleIdentifier:
+        [String: CapturableApplication] = [:]
+    private var activeCallBundleIdentifiers: Set<String> = []
+    private var pendingCallBundleIdentifiers: [String] = []
+    private var reminderApplication: CapturableApplication?
     private var activity = Activity.idle
 
     private static let outputDirectoryKey = "outputDirectory"
     private static let selectedBundleIdentifierKey = "selectedBundleIdentifier"
+    private static let monitoredBundleIdentifiersKey = "monitoredBundleIdentifiers"
 
     init(
         defaults: UserDefaults = .standard,
@@ -42,6 +47,9 @@ final class RecorderModel {
         self.defaults = defaults
         self.notifyCallDetected = notifyCallDetected
         selectedBundleIdentifier = defaults.string(forKey: Self.selectedBundleIdentifierKey)
+        monitoredBundleIdentifiers = Set(
+            defaults.stringArray(forKey: Self.monitoredBundleIdentifiersKey) ?? []
+        )
 
         if let saved = defaults.string(forKey: Self.outputDirectoryKey) {
             outputDirectory = URL(fileURLWithPath: saved, isDirectory: true)
@@ -57,12 +65,22 @@ final class RecorderModel {
         applications.first { $0.bundleIdentifier == selectedBundleIdentifier }
     }
 
+    var monitoredApplications: [CapturableApplication] {
+        applications.filter {
+            monitoredBundleIdentifiers.contains($0.bundleIdentifier)
+        }
+    }
+
     var isActive: Bool {
         isRecordingOperationActive || isCallMonitoring
     }
 
     var isTargetSelectionLocked: Bool {
-        isRecordingOperationActive || isCallMonitoring
+        isRecordingOperationActive
+    }
+
+    var isMonitoringSelectionLocked: Bool {
+        isCallMonitoring
     }
 
     var isRecordingConfigurationLocked: Bool {
@@ -105,6 +123,27 @@ final class RecorderModel {
         defaults.set(bundleIdentifier, forKey: Self.selectedBundleIdentifierKey)
     }
 
+    func toggleMonitoredApplication(bundleIdentifier: String) {
+        guard !isCallMonitoring else { return }
+        if monitoredBundleIdentifiers.remove(bundleIdentifier) == nil {
+            let rootBundleIdentifier = ApplicationBundleMatcher(
+                targetBundleIdentifier: bundleIdentifier
+            ).rootBundleIdentifier
+            monitoredBundleIdentifiers = Set(
+                monitoredBundleIdentifiers.filter {
+                    ApplicationBundleMatcher(
+                        targetBundleIdentifier: $0
+                    ).rootBundleIdentifier != rootBundleIdentifier
+                }
+            )
+            monitoredBundleIdentifiers.insert(bundleIdentifier)
+        }
+        defaults.set(
+            monitoredBundleIdentifiers.sorted(),
+            forKey: Self.monitoredBundleIdentifiersKey
+        )
+    }
+
     func refreshApplications() async {
         guard !isTargetSelectionLocked else { return }
         isRefreshing = true
@@ -113,6 +152,7 @@ final class RecorderModel {
         do {
             let loaded = try await Recorder.applications()
             applications = loaded
+            reconcileMonitoredApplications(with: loaded)
             let preferredBundleIdentifier = defaults.string(
                 forKey: Self.selectedBundleIdentifierKey
             )
@@ -133,10 +173,14 @@ final class RecorderModel {
                     ?? loaded.first(where: { $0.callApplication != nil })?.bundleIdentifier
                     ?? loaded.first?.bundleIdentifier
             }
-            statusMessage =
-                loaded.isEmpty
-                ? "没有找到可录音的运行中 app"
-                : "选择目标 app 后即可开始"
+            if isCallMonitoring {
+                statusMessage = monitoringStatusMessage
+            } else {
+                statusMessage =
+                    loaded.isEmpty
+                    ? "没有找到可录音的运行中 app"
+                    : "选择目标 app 后即可开始"
+            }
         } catch {
             applications = []
             selectedBundleIdentifier = nil
@@ -161,10 +205,11 @@ final class RecorderModel {
 
     func triggerPrimaryAction() {
         guard operationTask == nil else { return }
-        callReminderMessage = nil
+        clearCallReminder()
         operationTask = Task { [weak self] in
             await self?.performPrimaryAction()
             self?.operationTask = nil
+            self?.presentNextCallReminderIfPossible()
         }
     }
 
@@ -177,13 +222,21 @@ final class RecorderModel {
     }
 
     func startRecordingFromReminder() {
-        callReminderMessage = nil
-        guard !isRecordingOperationActive else { return }
-        triggerPrimaryAction()
+        guard operationTask == nil, activity == .idle,
+            let application = reminderApplication
+        else { return }
+        clearCallReminder()
+        operationTask = Task { [weak self, application] in
+            await self?.startRecording(application: application)
+            self?.operationTask = nil
+            self?.presentNextCallReminderIfPossible()
+        }
     }
 
-    func dismissCallReminder() {
-        callReminderMessage = nil
+    func dismissCallReminder() async {
+        clearCallReminder()
+        await Task.yield()
+        presentNextCallReminderIfPossible()
     }
 
     func shutdown() async {
@@ -203,7 +256,8 @@ final class RecorderModel {
     private func performPrimaryAction() async {
         switch activity {
         case .idle:
-            await startRecording()
+            guard let application = selectedApplication else { return }
+            await startRecording(application: application)
         case .recording:
             await finishRecording()
         case .preparing, .stopping:
@@ -211,8 +265,7 @@ final class RecorderModel {
         }
     }
 
-    private func startRecording() async {
-        guard let application = selectedApplication else { return }
+    private func startRecording(application: CapturableApplication) async {
         activity = .preparing
         statusMessage = "正在准备录制…"
 
@@ -231,6 +284,7 @@ final class RecorderModel {
                 _ = await session.stop()
                 try? FileManager.default.removeItem(at: outputURL)
                 activity = .idle
+                presentNextCallReminderIfPossible()
                 return
             }
             recordingSession = session
@@ -254,6 +308,7 @@ final class RecorderModel {
             activity = .idle
             recordingStartedAt = nil
             present(error)
+            presentNextCallReminderIfPossible()
         }
     }
 
@@ -269,27 +324,37 @@ final class RecorderModel {
         apply(result)
         activity = .idle
         recordingStartedAt = nil
+        presentNextCallReminderIfPossible()
     }
 
     private func startCallMonitoring() {
-        guard callMonitor == nil, let application = selectedApplication else { return }
+        let monitoredApplications = monitoredApplications
+        guard callMonitor == nil, !monitoredApplications.isEmpty else { return }
 
         let monitor = CallActivityMonitor(
-            targetBundleID: application.bundleIdentifier
+            targetBundleIdentifiers: Set(
+                monitoredApplications.map(\.bundleIdentifier)
+            )
         )
         callMonitor = monitor
-        monitoredApplicationName = application.name
-        isCallActive = false
+        monitoredApplicationsByBundleIdentifier = Dictionary(
+            uniqueKeysWithValues: monitoredApplications.map {
+                ($0.bundleIdentifier, $0)
+            }
+        )
+        activeCallBundleIdentifiers.removeAll()
+        pendingCallBundleIdentifiers.removeAll()
+        clearCallReminder()
         isCallMonitoring = true
         if activity == .idle {
-            statusMessage = "正在监听 \(application.name) 的通话活动"
+            statusMessage = monitoringStatusMessage
         }
 
         monitor.start()
         callMonitorTask = Task { [weak self, monitor] in
-            for await active in monitor.activityEvents() {
+            for await event in monitor.activityEvents() {
                 guard !Task.isCancelled else { break }
-                self?.handleCallActivity(active)
+                self?.handleCallActivity(event)
             }
         }
     }
@@ -304,34 +369,95 @@ final class RecorderModel {
         monitor.stop()
 
         isCallMonitoring = false
-        isCallActive = false
-        monitoredApplicationName = nil
-        callReminderMessage = nil
+        monitoredApplicationsByBundleIdentifier.removeAll()
+        activeCallBundleIdentifiers.removeAll()
+        pendingCallBundleIdentifiers.removeAll()
+        clearCallReminder()
         if activity == .idle {
             statusMessage = "通话提醒已关闭"
         }
         return task
     }
 
-    func handleCallActivity(_ active: Bool) {
-        guard isCallMonitoring else { return }
-        if active {
-            guard !isCallActive else { return }
-            isCallActive = true
-            guard !isRecordingOperationActive else { return }
+    func handleCallActivity(_ event: CallActivityEvent) {
+        guard isCallMonitoring,
+            monitoredApplicationsByBundleIdentifier[event.bundleIdentifier] != nil
+        else { return }
 
-            let applicationName = monitoredApplicationName ?? "目标 app"
-            callReminderMessage = "检测到 \(applicationName) 同时使用音频输入与输出，是否开始录制？"
-            statusMessage = "检测到疑似通话，等待手动录制"
+        if event.isActive {
+            guard activeCallBundleIdentifiers.insert(
+                event.bundleIdentifier
+            ).inserted else { return }
+            pendingCallBundleIdentifiers.append(event.bundleIdentifier)
+            presentNextCallReminderIfPossible()
+            return
+        }
+
+        activeCallBundleIdentifiers.remove(event.bundleIdentifier)
+        pendingCallBundleIdentifiers.removeAll {
+            $0 == event.bundleIdentifier
+        }
+        if reminderApplication?.bundleIdentifier == event.bundleIdentifier {
+            clearCallReminder()
+            presentNextCallReminderIfPossible()
+        } else if activity == .idle, reminderApplication == nil {
+            statusMessage = monitoringStatusMessage
+        }
+    }
+
+    private func presentNextCallReminderIfPossible() {
+        guard isCallMonitoring, !isRecordingOperationActive,
+            reminderApplication == nil
+        else { return }
+
+        while !pendingCallBundleIdentifiers.isEmpty {
+            let bundleIdentifier = pendingCallBundleIdentifiers.removeFirst()
+            guard activeCallBundleIdentifiers.contains(bundleIdentifier),
+                let application =
+                    monitoredApplicationsByBundleIdentifier[bundleIdentifier]
+            else { continue }
+
+            reminderApplication = application
+            callReminderMessage =
+                "检测到 \(application.name) 同时使用音频输入与输出，是否开始录制？"
+            statusMessage = "检测到 \(application.name) 疑似通话，等待手动录制"
             notifyCallDetected()
             return
         }
 
-        isCallActive = false
-        callReminderMessage = nil
-        if activity == .idle, let applicationName = monitoredApplicationName {
-            statusMessage = "正在监听 \(applicationName) 的通话活动"
+        if activity == .idle {
+            statusMessage = monitoringStatusMessage
         }
+    }
+
+    private func clearCallReminder() {
+        reminderApplication = nil
+        callReminderMessage = nil
+    }
+
+    private var monitoringStatusMessage: String {
+        "正在监听 \(monitoredApplicationsByBundleIdentifier.count) 个 app 的通话活动"
+    }
+
+    private func reconcileMonitoredApplications(
+        with loadedApplications: [CapturableApplication]
+    ) {
+        let reconciled = Set(
+            monitoredBundleIdentifiers.map { bundleIdentifier in
+                let matcher = ApplicationBundleMatcher(
+                    targetBundleIdentifier: bundleIdentifier
+                )
+                return loadedApplications.first {
+                    matcher.belongsToSameFamily(as: $0.bundleIdentifier)
+                }?.bundleIdentifier ?? bundleIdentifier
+            }
+        )
+        guard reconciled != monitoredBundleIdentifiers else { return }
+        monitoredBundleIdentifiers = reconciled
+        defaults.set(
+            monitoredBundleIdentifiers.sorted(),
+            forKey: Self.monitoredBundleIdentifiersKey
+        )
     }
 
     private func apply(_ result: RecordingResult) {

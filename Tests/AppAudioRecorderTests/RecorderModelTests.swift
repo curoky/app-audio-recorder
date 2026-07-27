@@ -11,11 +11,21 @@ final class RecorderModelTests: XCTestCase {
 
         let firstModel = RecorderModel(defaults: defaults)
         firstModel.selectApplication(bundleIdentifier: "com.example.Audio")
+        firstModel.toggleMonitoredApplication(
+            bundleIdentifier: "com.example.First"
+        )
+        firstModel.toggleMonitoredApplication(
+            bundleIdentifier: "com.example.Second"
+        )
 
         let restoredModel = RecorderModel(defaults: defaults)
         XCTAssertEqual(
             restoredModel.selectedBundleIdentifier,
             "com.example.Audio"
+        )
+        XCTAssertEqual(
+            restoredModel.monitoredBundleIdentifiers,
+            ["com.example.First", "com.example.Second"]
         )
     }
 
@@ -49,34 +59,109 @@ final class RecorderModelTests: XCTestCase {
         XCTAssertFalse(model.isActive)
     }
 
-    func testCallReminderRequiresManualRecordingAndOnlyFiresOncePerCall() async {
+    func testMultipleCallRemindersAreQueuedAndOnlyFireOncePerCall() async {
+        let suiteName = "RecorderModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         var notificationCount = 0
-        let model = RecorderModel(notifyCallDetected: {
-            notificationCount += 1
-        })
-        let application = CapturableApplication(
-            name: "Example",
-            bundleIdentifier: "com.example.Audio",
+        let model = RecorderModel(
+            defaults: defaults,
+            notifyCallDetected: {
+                notificationCount += 1
+            }
+        )
+        let firstApplication = CapturableApplication(
+            name: "First",
+            bundleIdentifier: "com.example.First",
             processID: 1
         )
-        model.applications = [application]
-        model.selectApplication(bundleIdentifier: application.bundleIdentifier)
+        let secondApplication = CapturableApplication(
+            name: "Second",
+            bundleIdentifier: "com.example.Second",
+            processID: 2
+        )
+        model.applications = [firstApplication, secondApplication]
+        model.toggleMonitoredApplication(
+            bundleIdentifier: firstApplication.bundleIdentifier
+        )
+        model.toggleMonitoredApplication(
+            bundleIdentifier: secondApplication.bundleIdentifier
+        )
 
         model.setCallMonitoringEnabled(true)
-        model.handleCallActivity(true)
-        model.handleCallActivity(true)
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: firstApplication.bundleIdentifier,
+                isActive: true
+            )
+        )
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: firstApplication.bundleIdentifier,
+                isActive: true
+            )
+        )
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: secondApplication.bundleIdentifier,
+                isActive: true
+            )
+        )
 
         XCTAssertTrue(model.isCallMonitoring)
         XCTAssertFalse(model.isRecording)
         XCTAssertEqual(notificationCount, 1)
-        XCTAssertNotNil(model.callReminderMessage)
+        XCTAssertTrue(model.callReminderMessage?.contains("First") == true)
 
-        model.handleCallActivity(false)
-        model.handleCallActivity(true)
+        await model.dismissCallReminder()
 
         XCTAssertEqual(notificationCount, 2)
+        XCTAssertTrue(model.callReminderMessage?.contains("Second") == true)
+
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: secondApplication.bundleIdentifier,
+                isActive: false
+            )
+        )
+        XCTAssertNil(model.callReminderMessage)
+
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: firstApplication.bundleIdentifier,
+                isActive: false
+            )
+        )
+        model.handleCallActivity(
+            CallActivityEvent(
+                bundleIdentifier: firstApplication.bundleIdentifier,
+                isActive: true
+            )
+        )
+
+        XCTAssertEqual(notificationCount, 3)
         model.setCallMonitoringEnabled(false)
         await model.shutdown()
         XCTAssertFalse(model.isActive)
+    }
+
+    func testMonitoringSelectionKeepsOnlyOneProcessPerApplicationFamily() {
+        let suiteName = "RecorderModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = RecorderModel(defaults: defaults)
+
+        model.toggleMonitoredApplication(
+            bundleIdentifier: "org.whispersystems.signal-desktop"
+        )
+        model.toggleMonitoredApplication(
+            bundleIdentifier:
+                "org.whispersystems.signal-desktop.helper.Renderer"
+        )
+
+        XCTAssertEqual(
+            model.monitoredBundleIdentifiers,
+            ["org.whispersystems.signal-desktop.helper.Renderer"]
+        )
     }
 }

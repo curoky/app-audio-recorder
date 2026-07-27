@@ -4,6 +4,7 @@ import SwiftUI
 struct RecorderView: View {
     @Bindable var model: RecorderModel
     @State private var isApplicationPickerPresented = false
+    @State private var isMonitoringPickerPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -87,16 +88,49 @@ struct RecorderView: View {
                 }
 
                 GridRow {
+                    Text("监听 App")
+                    Button {
+                        isMonitoringPickerPresented = true
+                    } label: {
+                        HStack {
+                            Text(monitoredApplicationsTitle)
+                                .lineLimit(1)
+                            Spacer()
+                            Image(systemName: "chevron.down")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                    .popover(isPresented: $isMonitoringPickerPresented) {
+                        ApplicationPicker(
+                            applications: model.applications,
+                            selectedBundleIdentifiers:
+                                model.monitoredBundleIdentifiers
+                        ) {
+                            model.toggleMonitoredApplication(
+                                bundleIdentifier: $0
+                            )
+                        }
+                    }
+                    .disabled(
+                        model.isMonitoringSelectionLocked
+                            || model.applications.isEmpty
+                    )
+                }
+
+                GridRow {
                     Text("通话提醒")
                     Toggle(
-                        "检测到疑似通话时提醒",
+                        "同时监听所选 App",
                         isOn: Binding(
                             get: { model.isCallMonitoring },
                             set: { model.setCallMonitoringEnabled($0) }
                         )
                     )
                     .disabled(
-                        model.selectedApplication == nil && !model.isCallMonitoring
+                        model.monitoredApplications.isEmpty
+                            && !model.isCallMonitoring
                     )
                 }
 
@@ -160,7 +194,7 @@ struct RecorderView: View {
                 }
             }
 
-            Text("通话提醒每 3 秒检查目标 app 家族的音频输入与输出；检测到疑似通话后由你确认是否开始录制。")
+            Text("通话提醒每 3 秒同时检查所选 app 家族；检测到疑似通话后，可手动录制触发提醒的 app。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
@@ -214,15 +248,17 @@ struct RecorderView: View {
             "检测到疑似通话",
             isPresented: Binding(
                 get: { model.callReminderMessage != nil },
-                set: { if !$0 { model.dismissCallReminder() } }
+                set: {
+                    if !$0 {
+                        Task { await model.dismissCallReminder() }
+                    }
+                }
             )
         ) {
             Button("开始录制") {
                 model.startRecordingFromReminder()
             }
-            Button("忽略", role: .cancel) {
-                model.dismissCallReminder()
-            }
+            Button("忽略", role: .cancel) {}
         } message: {
             Text(model.callReminderMessage ?? "")
         }
@@ -271,4 +307,16 @@ struct RecorderView: View {
         }
     }
 
+    private var monitoredApplicationsTitle: String {
+        let selected = model.monitoredApplications
+        if selected.isEmpty {
+            return model.monitoredBundleIdentifiers.isEmpty
+                ? "选择 App…"
+                : "已选择 \(model.monitoredBundleIdentifiers.count) 个 App"
+        }
+        if selected.count == 1 {
+            return selected[0].name
+        }
+        return "\(selected[0].name) 等 \(selected.count) 个 App"
+    }
 }

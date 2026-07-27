@@ -8,7 +8,12 @@ struct ProcessAudioActivity: Equatable {
     let usesOutput: Bool
 }
 
-/// 每三秒轮询目标 app 家族的 CoreAudio 进程活动，并输出去抖后的疑似通话状态。
+struct CallActivityEvent: Equatable, Sendable {
+    let bundleIdentifier: String
+    let isActive: Bool
+}
+
+/// 每三秒轮询多个目标 app 家族的 CoreAudio 进程活动，并分别输出去抖后的疑似通话状态。
 ///
 /// 输入与输出可以由同一 app 的不同 helper 进程承载，因此按 bundle family 聚合：
 /// 家族内至少一路输入且至少一路输出同时活动时才视为通话。
@@ -17,26 +22,29 @@ final class CallActivityMonitor: @unchecked Sendable {
     private static let endDelay: TimeInterval = 2
 
     private let queue = DispatchQueue(label: "app-audio-recorder.call-monitor")
-    private let targetBundleMatcher: ApplicationBundleMatcher
+    private let targets: [Target]
     private let logger = AppLog.logger("call-monitor")
-    private let events: AsyncStream<Bool>
-    private let continuation: AsyncStream<Bool>.Continuation
+    private let events: AsyncStream<CallActivityEvent>
+    private let continuation: AsyncStream<CallActivityEvent>.Continuation
 
     // 以下状态仅在 `queue` 上访问。
     private var pollingTimer: DispatchSourceTimer?
-    private var callActive = false
-    private var pendingStop: DispatchWorkItem?
+    private var activeBundleIdentifiers: Set<String> = []
+    private var pendingStops: [String: DispatchWorkItem] = [:]
 
-    init(targetBundleID: String) {
-        targetBundleMatcher = ApplicationBundleMatcher(
-            targetBundleIdentifier: targetBundleID
-        )
+    init(targetBundleIdentifiers: Set<String>) {
+        targets = targetBundleIdentifiers.sorted().map {
+            Target(
+                bundleIdentifier: $0,
+                matcher: ApplicationBundleMatcher(targetBundleIdentifier: $0)
+            )
+        }
         (events, continuation) = AsyncStream.makeStream(
             bufferingPolicy: .unbounded
         )
     }
 
-    func activityEvents() -> AsyncStream<Bool> { events }
+    func activityEvents() -> AsyncStream<CallActivityEvent> { events }
 
     /// 立即扫描一次，随后固定轮询；同一实例只启动一次。
     func start() {
@@ -60,8 +68,8 @@ final class CallActivityMonitor: @unchecked Sendable {
     /// 停止轮询并结束事件流（幂等）。
     func stop() {
         queue.async { [self] in
-            pendingStop?.cancel()
-            pendingStop = nil
+            pendingStops.values.forEach { $0.cancel() }
+            pendingStops.removeAll()
             pollingTimer?.cancel()
             pollingTimer = nil
             continuation.finish()
@@ -76,30 +84,54 @@ final class CallActivityMonitor: @unchecked Sendable {
     // MARK: - 状态计算（仅在 queue 上调用）
 
     private func recomputeState() {
-        guard let activities = matchedProcessActivities() else {
+        guard let activitiesByBundleIdentifier = matchedProcessActivities() else {
             logger.warning("读取 CoreAudio 进程活动失败，本轮保持现有状态")
             return
         }
-        let rawActive = Self.hasCallActivity(activities)
-        if rawActive {
-            pendingStop?.cancel()
-            pendingStop = nil
-            guard !callActive else { return }
-            callActive = true
-            logger.info("检测到目标 app 同时使用音频输入与输出")
-            continuation.yield(true)
+
+        for target in targets {
+            updateState(
+                bundleIdentifier: target.bundleIdentifier,
+                isActive: Self.hasCallActivity(
+                    activitiesByBundleIdentifier[target.bundleIdentifier, default: []]
+                )
+            )
+        }
+    }
+
+    private func updateState(bundleIdentifier: String, isActive: Bool) {
+        if isActive {
+            pendingStops.removeValue(forKey: bundleIdentifier)?.cancel()
+            guard activeBundleIdentifiers.insert(bundleIdentifier).inserted else {
+                return
+            }
+            logger.info("检测到 \(bundleIdentifier, privacy: .public) 同时使用音频输入与输出")
+            continuation.yield(
+                CallActivityEvent(
+                    bundleIdentifier: bundleIdentifier,
+                    isActive: true
+                )
+            )
             return
         }
 
-        guard callActive, pendingStop == nil else { return }
+        guard activeBundleIdentifiers.contains(bundleIdentifier),
+            pendingStops[bundleIdentifier] == nil
+        else { return }
         let work = DispatchWorkItem { [self] in
-            pendingStop = nil
-            guard callActive else { return }
-            callActive = false
-            logger.info("目标 app 通话活动结束")
-            continuation.yield(false)
+            pendingStops[bundleIdentifier] = nil
+            guard activeBundleIdentifiers.remove(bundleIdentifier) != nil else {
+                return
+            }
+            logger.info("\(bundleIdentifier, privacy: .public) 通话活动结束")
+            continuation.yield(
+                CallActivityEvent(
+                    bundleIdentifier: bundleIdentifier,
+                    isActive: false
+                )
+            )
         }
-        pendingStop = work
+        pendingStops[bundleIdentifier] = work
         queue.asyncAfter(deadline: .now() + Self.endDelay, execute: work)
     }
 
@@ -115,10 +147,12 @@ final class CallActivityMonitor: @unchecked Sendable {
         )
     }
 
-    private func matchedProcessActivities() -> [ProcessAudioActivity]? {
+    private func matchedProcessActivities() -> [String: [ProcessAudioActivity]]? {
         guard let objectIDs = processObjects() else { return nil }
-        var activities: [ProcessAudioActivity] = []
-        for objectID in objectIDs where matchesTarget(objectID) {
+        var activitiesByBundleIdentifier: [String: [ProcessAudioActivity]] = [:]
+        for objectID in objectIDs {
+            let matchedBundleIdentifiers = matchedTargets(objectID)
+            guard !matchedBundleIdentifiers.isEmpty else { continue }
             guard let usesInput = isRunning(
                 objectID,
                 selector: kAudioProcessPropertyIsRunningInput
@@ -128,14 +162,17 @@ final class CallActivityMonitor: @unchecked Sendable {
             ) else {
                 return nil
             }
-            activities.append(
-                ProcessAudioActivity(
-                    usesInput: usesInput,
-                    usesOutput: usesOutput
-                )
+            let activity = ProcessAudioActivity(
+                usesInput: usesInput,
+                usesOutput: usesOutput
             )
+            for bundleIdentifier in matchedBundleIdentifiers {
+                activitiesByBundleIdentifier[bundleIdentifier, default: []].append(
+                    activity
+                )
+            }
         }
-        return activities
+        return activitiesByBundleIdentifier
     }
 
     private func processObjects() -> [AudioObjectID]? {
@@ -167,13 +204,15 @@ final class CallActivityMonitor: @unchecked Sendable {
         return ids
     }
 
-    private func matchesTarget(_ objectID: AudioObjectID) -> Bool {
+    private func matchedTargets(_ objectID: AudioObjectID) -> [String] {
         guard let pid = processPID(objectID),
             let bundleID = NSRunningApplication(
                 processIdentifier: pid
             )?.bundleIdentifier
-        else { return false }
-        return targetBundleMatcher.matches(bundleID)
+        else { return [] }
+        return targets.compactMap {
+            $0.matcher.matches(bundleID) ? $0.bundleIdentifier : nil
+        }
     }
 
     private func processPID(_ objectID: AudioObjectID) -> pid_t? {
@@ -211,5 +250,10 @@ final class CallActivityMonitor: @unchecked Sendable {
             return nil
         }
         return value != 0
+    }
+
+    private struct Target: Sendable {
+        let bundleIdentifier: String
+        let matcher: ApplicationBundleMatcher
     }
 }
