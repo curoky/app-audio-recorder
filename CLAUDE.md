@@ -4,12 +4,12 @@
 
 ## 项目概述
 
-macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。
+macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。还提供 `watch` 子命令**监听目标 app 麦克风活动**（CoreAudio 进程音频对象），检测到通话开始自动录制、结束自动保存，每段通话一个独立容器。
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
-- Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-log`（结构化日志，见[日志与输出流](#日志与输出流)）。均编译进单可执行文件。
-- 外部命令：混音由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**）离线完成；可执行文件本身（`record`/`list`）不依赖任何外部命令。
-- 产物：单可执行文件 `app-audio-recorder`（只含 `record`/`list`；混音是编译产物之外、Taskfile 里的便捷命令）。
+- Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-log`（结构化日志，见[日志与输出流](#日志与输出流)）、`swift-async-algorithms`（`watch` 的 `drive()` 用 `merge`/`AsyncChannel` 合并多路事件）。均编译进单可执行文件。
+- 外部命令：混音由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务用 `/opt/sb/bin/ffmpeg`（自编译静态版本，**不走 `PATH`**）离线完成；可执行文件本身（`record`/`list`/`watch`）不依赖任何外部命令。
+- 产物：单可执行文件 `app-audio-recorder`（只含 `record`/`list`/`watch`；混音是编译产物之外、Taskfile 里的便捷命令）。
 
 ## 常用命令
 
@@ -22,12 +22,13 @@ task test               # 运行测试
 task list               # 列出可录音的运行中 app
 task record             # 录制（默认微信），Ctrl-C 结束
 task record -- --app WeChat --duration 30   # 参数用 -- 透传给可执行文件
+task watch              # 监听微信通话，通话开始自动录制、结束自动保存，Ctrl-C 退出
 task merge -- 微信-2026-07-27.m4a            # 用 ffmpeg 把容器内两条轨离线混音
 task install            # release 构建并安装到 /usr/local/bin
 task clean              # 清理构建产物
 ```
 
-底层就是 `swift build [-c release]` / `swift test` / `swift run app-audio-recorder <子命令>`（`record`/`list`），无 task 时可直接用；混音则是 Taskfile 里一条裸 `ffmpeg` 命令，不属于可执行文件。
+底层就是 `swift build [-c release]` / `swift test` / `swift run app-audio-recorder <子命令>`（`record`/`list`/`watch`），无 task 时可直接用；混音则是 Taskfile 里一条裸 `ffmpeg` 命令，不属于可执行文件。
 
 - **测试**：`Tests/AppAudioRecorderTests/` 覆盖 CLI 参数校验；ScreenCaptureKit 实际捕获、`task merge` 混音仍需带权限/带样本手工验证。
 - **无 lint/format 配置**：沿用现有代码风格即可，不要擅自引入工具链或大规模重排。
@@ -56,6 +57,28 @@ app-audio-recorder record --duration 30                # 定时 30 秒后自动�
 ```
 
 `list` 会在微信所在行标注 `← 微信`（匹配 `com.tencent.xinWeChat`）。
+
+### watch 参数
+
+`watch` 常驻监听目标 app（默认微信）的麦克风活动，检测到通话开始自动录制、麦克风静默超阈值判定结束并保存；每段通话产出一个带时间戳的 `.m4a` 多轨容器（app + mic 双轨，与 `record --mic` 一致）。按 Ctrl-C 退出监听（若正录制会先收尾保存当前通话）。完整参数见 [WatchCommand.swift](Sources/AppAudioRecorder/WatchCommand.swift) 或 `app-audio-recorder watch --help`：
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `--app` / `-a` | `com.tencent.xinWeChat` | 目标 app 的名称关键字或 bundleId（匹配规则同 `record`）；启动时须已运行 |
+| `--output-dir` | 当前目录 | 每段通话在此目录下生成 `<app名>-<时间戳>.m4a`，支持 `~` 展开 |
+| `--sample-rate` | `48000` | 采样率（1...48000 Hz） |
+| `--channels` | `2` | 声道数（仅支持 1=单声道、2=立体声） |
+| `--silence` | `2.0` | 麦克风静默多少秒后判定通话结束（去抖窗口，须 ≥ 0） |
+| `--verbose` / `-v` | 关 | 输出 debug 级诊断日志（stderr） |
+| `--quiet` / `-q` | 关 | 只输出 error，静默进度/状态日志（stderr） |
+
+```bash
+app-audio-recorder watch                          # 监听微信通话，自动录制/保存到当前目录
+app-audio-recorder watch --output-dir ~/Desktop/calls  # 产物落到指定目录
+app-audio-recorder watch --silence 3              # 静默 3 秒才判定通话结束
+```
+
+触发信号选用「目标 app 正在使用麦克风」（`kAudioProcessPropertyIsRunningInput`）：语音/视频通话必开麦克风，而单纯放音（背景音乐、系统提示音、点开别人发来的语音消息）只走输出、不会误触发。注意**自己录/发一条语音消息**也会开麦克风，会被当成一段通话录下；`--silence` 去抖可滤掉大部分极短的误触。首个版本只覆盖微信这类单进程、bundleId 稳定的 app；Electron 类（如 Signal）音频走 helper 子进程，PID→bundleId 匹配需另行适配。
 
 ### merge（Taskfile 命令，非子命令）
 
@@ -97,14 +120,16 @@ ffmpeg -i 微信-2026-07-27.m4a -map 0:a:1 -c copy 微信-mic.wav   # 取 mic �
 
 ## 架构
 
-CLI 入口聚合两个子命令（`list`/`record`），捕获逻辑与内容解析分层；混音不在可执行文件内，由 Taskfile 的 `merge` 任务调 `ffmpeg` 完成：
+CLI 入口聚合三个子命令（`list`/`record`/`watch`），捕获逻辑、内容解析、通话活动监听分层；混音不在可执行文件内，由 Taskfile 的 `merge` 任务调 `ffmpeg` 完成：
 
 | 文件 | 职责 |
 | --- | --- |
 | [AppAudioRecorder.swift](Sources/AppAudioRecorder/AppAudioRecorder.swift) | `@main` 顶层命令，聚合子命令，默认子命令为 `record` |
 | [ListCommand.swift](Sources/AppAudioRecorder/ListCommand.swift) | `list`：打印可捕获音频的运行中 app |
 | [RecordCommand.swift](Sources/AppAudioRecorder/RecordCommand.swift) | `record`：参数解析、派生输出容器路径、启动引擎、Ctrl-C/定时停止 |
+| [WatchCommand.swift](Sources/AppAudioRecorder/WatchCommand.swift) | `watch`：常驻监听麦克风活动，`drive()` 用 `merge` 合并「通话活动/Ctrl-C/录制失败」三路事件，对每段通话跑一遍 `engine.start → stop`，Ctrl-C 退出 |
 | [ContentResolver.swift](Sources/AppAudioRecorder/ContentResolver.swift) | 枚举 app、按名称/bundleId 匹配、构建只含目标 app 的过滤器 |
+| [CallActivityMonitor.swift](Sources/AppAudioRecorder/CallActivityMonitor.swift) | CoreAudio 进程音频对象监听：目标 app 的 `IsRunningInput` 翻转 → 去抖后吐出通话开始/结束事件 |
 | [MicrophonePermission.swift](Sources/AppAudioRecorder/MicrophonePermission.swift) | 麦克风权限查询与申请 |
 | [AudioCaptureEngine.swift](Sources/AppAudioRecorder/AudioCaptureEngine.swift) | `SCStream` 捕获生命周期与样本转发（app + 可选麦克风双路，不含写盘逻辑） |
 | [AudioContainerWriter.swift](Sources/AppAudioRecorder/AudioContainerWriter.swift) | `AVAssetWriter` 把 app/mic 样本连同 PTS 写入单个多轨容器（`.m4a` / ALAC），保留轨间起始偏移 |

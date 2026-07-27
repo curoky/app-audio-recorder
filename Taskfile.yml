@@ -47,6 +47,21 @@ tasks:
     cmds:
       - swift run {{.SANDBOX_FLAG}} {{.BIN}} record {{.CLI_ARGS}}
 
+  record:wechat:
+    desc: 快捷录制微信（bundleId com.tencent.xinWeChat），Ctrl-C 结束；额外参数用 -- 透传（如 task record:wechat -- --duration 30）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app com.tencent.xinWeChat {{.CLI_ARGS}}
+
+  record:signal:
+    desc: 快捷录制 Signal（按名称关键字匹配），Ctrl-C 结束；额外参数用 -- 透传（如 task record:signal -- --duration 30）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} record --app Signal {{.CLI_ARGS}}
+
+  watch:
+    desc: 监听目标 app（默认微信）麦克风活动，通话开始自动录制、结束自动保存，Ctrl-C 退出；参数用 -- 透传（如 task watch -- --output-dir ~/Desktop/calls）
+    cmds:
+      - swift run {{.SANDBOX_FLAG}} {{.BIN}} watch {{.CLI_ARGS}}
+
   merge:
     desc: 用 ffmpeg 把多轨容器（record 产出的 .m4a）内 app+mic 两条轨离线混音成 <基名>-merged.wav；容器路径用 -- 传（如 task merge -- 微信-2026-07-27.m4a），改增益用 GAIN=0.5
     silent: true
