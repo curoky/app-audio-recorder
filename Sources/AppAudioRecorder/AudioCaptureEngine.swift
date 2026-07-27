@@ -20,6 +20,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private let sampleQueue = DispatchQueue(label: "app-audio-recorder.sample")
     private let outputURL: URL
+    private let overwritesExistingOutput: Bool
     private let logger: Logger
     private var writer: AudioContainerWriter?
     private let failureEvents: AsyncStream<Void>
@@ -36,12 +37,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         capturesMicrophone: Bool,
         sampleRate: Int = 48_000,
         channelCount: Int = 2,
+        overwritesExistingOutput: Bool = true,
         logger: Logger = AppLog.logger("capture")
     ) {
         self.outputURL = outputURL
         self.sampleRate = sampleRate
         self.channelCount = channelCount
         self.capturesMicrophone = capturesMicrophone
+        self.overwritesExistingOutput = overwritesExistingOutput
         self.logger = logger
         (self.failureEvents, self.failureContinuation) = AsyncStream.makeStream(
             bufferingPolicy: .bufferingNewest(1)
@@ -64,7 +67,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                     outputURL: outputURL,
                     sampleRate: sampleRate,
                     channels: channelCount,
-                    capturesMicrophone: capturesMicrophone
+                    capturesMicrophone: capturesMicrophone,
+                    overwritesExistingOutput: overwritesExistingOutput
                 )
             }
 
@@ -97,6 +101,11 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 "mic": .stringConvertible(capturesMicrophone),
             ])
         } catch {
+            sampleQueue.sync {
+                writer?.cancelWriting(removeOutput: true)
+                writer = nil
+            }
+            failureContinuation.finish()
             logger.error("启动捕获失败", metadata: ["error": .string(String(describing: error))])
             throw .audioCaptureFailed
         }
@@ -120,9 +129,14 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             self.stream = nil
         }
         // 先在采样队列上同步标记所有输入结束（不再有样本追加），并取出已记录的错误。
-        let (writerToFinish, recordedError) = sampleQueue.sync {
-            writer?.finalizeInputs()
-            return (writer, writeError)
+        let (writerToFinish, recordedError, finalizationError) = sampleQueue.sync {
+            var finalizationError: Error?
+            do {
+                try writer?.finalizeInputs()
+            } catch {
+                finalizationError = error
+            }
+            return (writer, writeError, finalizationError)
         }
         failureContinuation.finish()
 
@@ -134,7 +148,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             stopError = stopError ?? error
         }
 
-        if let error = recordedError ?? stopError {
+        if let error = recordedError ?? finalizationError ?? stopError {
             if let recorderError = error as? RecorderError {
                 throw recorderError
             }

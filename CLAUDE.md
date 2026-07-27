@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），轨间起始偏移由容器时间线原生保存；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。还提供 `watch` 子命令**监听目标 app 麦克风活动**（CoreAudio 进程音频对象），检测到通话开始自动录制、结束自动保存，每段通话一个独立容器。
+macOS 命令行工具，基于 [ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) 录制**指定 app 播放出的音频**（走系统输出）。可选同时录制**麦克风输入**，两路作为独立音轨写入**单个多轨容器**（`.m4a` / ALAC 无损），写入器按首帧 PTS 为较晚开始的轨补起始静音以保留对齐；需要混音时把容器直接喂给 `task merge`（用 `ffmpeg` 离线混音）离线合并，需要单独 WAV 时用 `ffmpeg -c copy` 无损 demux。首要场景是录制 macOS 版微信（bundleId `com.tencent.xinWeChat`）的语音/通话声音。还提供 `watch` 子命令**监听目标 app 麦克风活动**（CoreAudio 进程音频对象），检测到通话开始自动录制、结束自动保存，每段通话一个独立容器。
 
 - 语言/工具链：Swift 6.2（`swift-tools-version:6.2`，v6 language mode + strict concurrency complete + Approachable Concurrency），平台 `macOS 26+`（Xcode 26 / Swift 6.2）。
 - Swift 依赖：`swift-argument-parser`（构建 CLI）、`swift-log`（结构化日志，见[日志与输出流](#日志与输出流)）、`swift-async-algorithms`（`watch` 的 `drive()` 用 `merge`/`AsyncChannel` 合并多路事件）。均编译进单可执行文件。
@@ -42,7 +42,7 @@ task clean              # 清理构建产物
 | `--app` / `-a` | `com.tencent.xinWeChat` | 目标 app 的名称关键字或 bundleId（先精确匹配 bundleId，再按名称/bundleId 包含匹配） |
 | `--output` / `-o` | 当前目录 `<app名>-<时间戳>` | 输出容器 **基础路径**（末尾 `.m4a`/`.wav` 会被去掉再补 `.m4a`），支持 `~` 展开 |
 | `--mic` / `--no-mic` | `--mic`（开启） | 是否同时录制麦克风输入（多写一条 mic 轨） |
-| `--sample-rate` | `48000` | 采样率（1...48000 Hz） |
+| `--sample-rate` | `48000` | 采样率（8000...48000 Hz） |
 | `--channels` | `2` | 声道数（仅支持 1=单声道、2=立体声） |
 | `--duration` | `0` | 最长录制秒数（须 ≥ 0）；0 表示不限，直到 Ctrl-C |
 | `--verbose` / `-v` | 关 | 输出 debug 级诊断日志（stderr） |
@@ -65,8 +65,8 @@ app-audio-recorder record --duration 30                # 定时 30 秒后自动�
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `--app` / `-a` | `com.tencent.xinWeChat` | 目标 app 的名称关键字或 bundleId（匹配规则同 `record`）；启动时须已运行 |
-| `--output-dir` | 当前目录 | 每段通话在此目录下生成 `<app名>-<时间戳>.m4a`，支持 `~` 展开 |
-| `--sample-rate` | `48000` | 采样率（1...48000 Hz） |
+| `--output-dir` | 当前目录 | 每段通话在此目录下生成 `<app名>-<时间戳>.m4a`，同名时追加 `-2`、`-3`，支持 `~` 展开 |
+| `--sample-rate` | `48000` | 采样率（8000...48000 Hz） |
 | `--channels` | `2` | 声道数（仅支持 1=单声道、2=立体声） |
 | `--silence` | `2.0` | 麦克风静默多少秒后判定通话结束（去抖窗口，须 ≥ 0） |
 | `--verbose` / `-v` | 关 | 输出 debug 级诊断日志（stderr） |
@@ -105,7 +105,7 @@ ffmpeg -i 微信-2026-07-27.m4a -map 0:a:1 -c copy 微信-mic.wav   # 取 mic �
 
 ### 输出文件
 
-- **`record` 录麦克风（默认）**：产出**单个多轨容器** `<base>.m4a`，内含两条 ALAC 无损轨——轨 0 为 app 音频、轨 1 为麦克风，轨间起始偏移由容器时间线保存。需要混音直接把容器喂给 `task merge`；需要单独取出某条轨为 WAV 用 `ffmpeg -c copy` demux。
+- **`record` 录麦克风（默认）**：产出**单个多轨容器** `<base>.m4a`，内含两条 ALAC 无损轨——轨 0 为 app 音频、轨 1 为麦克风，较晚开始的轨会按首帧 PTS 补起始静音以保留对齐。需要混音直接把容器喂给 `task merge`；需要单独取出某条轨为 WAV 用 `ffmpeg -c copy` demux。
 - **`record --no-mic`**：产出单轨容器 `<base>.m4a`（仅 app 音频一条 ALAC 轨）；`task merge` 对其报错（无第二条轨可混）。
 - **`task merge`**：读多轨容器产出 `<容器基名>-merged.wav`（两条轨离线混音）。
 - 其中 `<base>` 由 `record --output` 指定（去掉 `.m4a`/`.wav` 扩展名），否则为当前目录 `<app名>-<时间戳>`。
@@ -132,7 +132,7 @@ CLI 入口聚合三个子命令（`list`/`record`/`watch`），捕获逻辑、�
 | [CallActivityMonitor.swift](Sources/AppAudioRecorder/CallActivityMonitor.swift) | CoreAudio 进程音频对象监听：目标 app 的 `IsRunningInput` 翻转 → 去抖后吐出通话开始/结束事件 |
 | [MicrophonePermission.swift](Sources/AppAudioRecorder/MicrophonePermission.swift) | 麦克风权限查询与申请 |
 | [AudioCaptureEngine.swift](Sources/AppAudioRecorder/AudioCaptureEngine.swift) | `SCStream` 捕获生命周期与样本转发（app + 可选麦克风双路，不含写盘逻辑） |
-| [AudioContainerWriter.swift](Sources/AppAudioRecorder/AudioContainerWriter.swift) | `AVAssetWriter` 把 app/mic 样本连同 PTS 写入单个多轨容器（`.m4a` / ALAC），保留轨间起始偏移 |
+| [AudioContainerWriter.swift](Sources/AppAudioRecorder/AudioContainerWriter.swift) | `AVAssetWriter` 把 app/mic 样本写入单个多轨容器（`.m4a` / ALAC），按首帧 PTS 为较晚轨补起始静音以保留对齐 |
 | [PathSupport.swift](Sources/AppAudioRecorder/PathSupport.swift) | `URL(expandingPath:)`：命令行路径的 `~` 展开 |
 | [InterruptSignal.swift](Sources/AppAudioRecorder/InterruptSignal.swift) | 把 SIGINT（Ctrl-C）封装成可 await 的信号 |
 | [RecorderError.swift](Sources/AppAudioRecorder/RecorderError.swift) | 可预期错误枚举，遵从 `LocalizedError`，`errorDescription` 为面向用户的中文提示 |
@@ -144,7 +144,7 @@ CLI 入口聚合三个子命令（`list`/`record`/`watch`），捕获逻辑、�
 1. `SCShareableContent` 枚举显示器与运行中 app（见 [ContentResolver.shareableContent](Sources/AppAudioRecorder/ContentResolver.swift#L11-L24)）。
 2. `SCContentFilter(display:including:[目标 app])` 构建**只含目标 app** 的过滤器，从而只捕获它的音频。
 3. `SCStream` 配置 `capturesAudio = true`、`excludesCurrentProcessAudio = true`；录麦克风时再开 `captureMicrophone = true`，两路（`.audio`/`.microphone`）共享同一采样队列，按类型分别写入容器的 app / mic 轨。
-4. 引擎在采样队列上把 `CMSampleBuffer` 连同其 PTS 转交 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift)，由 `AVAssetWriterInput` 编码成 ALAC 无损轨写入单个 `.m4a` 容器；会话起点取各预期轨首帧 PTS 的较小值，从而保留轨间起始偏移。
+4. 引擎在采样队列上把 `CMSampleBuffer` 连同其 PTS 转交 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift)，由 `AVAssetWriterInput` 编码成 ALAC 无损轨写入单个 `.m4a` 容器；会话起点取各预期轨首帧 PTS 的较小值，并为较晚开始的轨补等长起始静音。首帧等待缓存上限约一秒（同时限制为 256 个 buffer），避免缺轨时内存随录制时长增长。
 5. 混音是**独立环节，且不在可执行文件里**：`record` 结束只留一个多轨容器；需要合并时用 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务把容器直接喂给 `ffmpeg`（`[0:a:0][0:a:1]` 引用两条轨 → `amix` 纯和 + `volume` 缩放），无需先 demux。流式混音由 ffmpeg 内部处理，内存占用不随录音时长增长；混音计算在 `ffmpeg` 独立进程里完成，与录制/编译产物完全解耦。
 
 ### 日志与输出流
@@ -161,11 +161,11 @@ CLI 入口聚合三个子命令（`list`/`record`/`watch`），捕获逻辑、�
 - **线程模型**：[AudioCaptureEngine](Sources/AppAudioRecorder/AudioCaptureEngine.swift) 的可变写入状态（`writer`/`writeError`）与 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 的全部状态都只在串行队列 `sampleQueue` 上访问——`SCStreamOutput` 回调注册到该队列，`SCStreamDelegate` 错误回调也显式转投该队列。app 与麦克风两路共用同一 `sampleQueue`，按 `SCStreamOutputType` 分发到容器的对应轨。引擎的 `@unchecked Sendable` 是为桥接这套回调式 API 的**有依据**标注（`AudioContainerWriter` 因此可保持 `nonisolated` 非 Sendable、无需加锁）。**新增可变写入状态必须走同一队列**，否则破坏该前提。
 - **容器收尾时机**：`stop()` 先在 `sampleQueue` 上同步调用 `writer.finalizeInputs()`（标记所有输入结束，此后不再有样本追加），再在队列之外 `await writer.completeWriting()` 触发 `AVAssetWriter.finishWriting` 把容器 flush 到磁盘。异步收尾必须在标记结束、确无并发追加后进行；即使 `SCStream.stopCapture()` 失败也要走完收尾以写出有效容器。
 - **录制与混音解耦**：`record` 只负责产出多轨容器，**不做混音**；合并由 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务按需触发——一条裸 `ffmpeg` 命令直接读容器（无需先 demux），混音计算在 `ffmpeg` **独立进程**里完成，不占用本进程任何线程池，也**不进编译产物**。因此可执行文件本身零外部命令依赖、无 `swift-subprocess`；改混音行为直接改 Taskfile 里的 `ffmpeg` 滤镜链，不碰 Swift 代码。
-- **输出格式**：`record` 落盘固定为 `.m4a` 多轨容器，音轨为 ALAC 无损（16-bit 量化，与旧的 16-bit PCM 精度一致）；采样率/声道由 `--sample-rate`/`--channels` 决定（默认 48kHz 立体声）。`task merge` 输出 16-bit PCM WAV（`pcm_s16le`）：容器内 app 轨与 mic 轨由 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 用**同一份 settings** 写入，故**两轨格式恒等**，`amix` 自然跟随其采样率/声道，无需 `-ar/-ac` 强制（这也是省掉旧 Swift 版 ffprobe 探测的依据）；`amix=inputs=2:duration=longest` 使时长取较长者、较短一路缺失部分补静音，`normalize=0` + `volume=<gain>` 等价于 `gain*(app+mic)` 纯和缩放，`pcm_s16le` 编码的饱和量化即硬限幅。
+- **输出格式**：`record` 落盘固定为 `.m4a` 多轨容器，音轨为 ALAC 无损（16-bit 量化，与旧的 16-bit PCM 精度一致）；采样率/声道由 `--sample-rate`/`--channels` 决定（8000...48000 Hz，默认 48kHz 立体声）。`task merge` 输出 16-bit PCM WAV（`pcm_s16le`）：容器内 app 轨与 mic 轨由 [AudioContainerWriter](Sources/AppAudioRecorder/AudioContainerWriter.swift) 用**同一份 settings** 写入，故**两轨格式恒等**，`amix` 自然跟随其采样率/声道，无需 `-ar/-ac` 强制（这也是省掉旧 Swift 版 ffprobe 探测的依据）；`amix=inputs=2:duration=longest` 使时长取较长者、较短一路缺失部分补静音，`normalize=0` + `volume=<gain>` 等价于 `gain*(app+mic)` 纯和缩放，`pcm_s16le` 编码的饱和量化即硬限幅。
 
 ## 已知限制与扩展点
 
 - **麦克风混录**：`record` 默认同时录麦克风，与 app 音频作为两条 ALAC 轨写入同一 `.m4a` 容器（`--no-mic` 回到单轨容器）；合并是 [Taskfile.yml](Taskfile.yml) 的 `merge` 任务（**固定调用 `/opt/sb/bin/ffmpeg`，不走 `PATH`**，直接读容器内两条轨，无需先 demux），离线按 `GAIN` 缩放两路之和并硬限幅防削波（默认 0.707≈-3dB），不做响度归一化、闪避或降噪——这些若需要可在 Taskfile 里 `ffmpeg` 的滤镜链上加 `loudnorm`/`sidechaincompress` 等 ffmpeg 滤镜。
-- **时间对齐**：容器按各轨首帧 PTS 保留起始偏移，两路共享 SCStream 时钟时首帧通常同刻（offset 0）；若首帧错位则体现为轨道非零 `start_time`，demux 出的 WAV **不携带**该偏移（WAV 无时间戳），需要精确对齐混音时应从容器读 `start_time` 再喂 `ffmpeg` 的 `adelay`/`-itsoffset`。
+- **时间对齐**：AVAssetWriter 会把每条纯音频轨的首个样本各自归零，因此写入器不能只依赖容器 `start_time`。当前实现以两轨最早首帧 PTS 为会话起点，为较晚轨补等长起始静音；`task merge` 和 `ffmpeg -c copy` demux 都会自然保留该对齐。两路共享 SCStream 时钟时首帧通常同刻，不会产生额外静音。
 - **微信 bundleId 硬编码**为 `com.tencent.xinWeChat`（见 [ContentResolver.wechatBundleID](Sources/AppAudioRecorder/ContentResolver.swift#L7)）；版本不同则需 `list` 查到后用 `--app` 指定。
 - **分发**：作为独立 app 分发时建议带 `Info.plist`（`NSAudioCaptureUsageDescription`、`NSMicrophoneUsageDescription`）与签名，以获得更稳定的授权体验。

@@ -32,10 +32,10 @@ struct RecordCommand: AsyncParsableCommand {
         guard !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ValidationError("--app 不能为空。")
         }
-        guard (1...48_000).contains(sampleRate) else {
-            throw ValidationError("--sample-rate 必须在 1...48000 Hz 范围内（当前 \(sampleRate)）。")
+        guard AudioFormatConstraints.sampleRates.contains(sampleRate) else {
+            throw ValidationError("--sample-rate 必须在 8000...48000 Hz 范围内（当前 \(sampleRate)）。")
         }
-        guard (1...2).contains(channels) else {
+        guard AudioFormatConstraints.channelCounts.contains(channels) else {
             throw ValidationError("--channels 只能是 1 或 2（当前 \(channels)）。")
         }
         guard duration >= 0 else {
@@ -86,7 +86,7 @@ struct RecordCommand: AsyncParsableCommand {
         let seconds = engine.recordedSeconds
         logger.info("录制结束", metadata: ["seconds": .stringConvertible(String(format: "%.1f", seconds))])
         if mic {
-            logger.debug("容器含 app / mic 两条 ALAC 轨，起始偏移由容器时间线保存。")
+            logger.debug("容器含 app / mic 两条 ALAC 轨，起始偏移已按首帧 PTS 对齐。")
         }
         // 产物路径是可被管道/脚本消费的结果，走 stdout。
         print(outputURL.path)

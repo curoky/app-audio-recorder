@@ -18,7 +18,7 @@ struct WatchCommand: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "目标 app 的名称关键字或 bundleId，默认微信。")
     var app: String = ContentResolver.wechatBundleID
 
-    @Option(name: .long, help: "输出目录，每段通话在此生成带时间戳的 .m4a，默认当前目录。")
+    @Option(name: .long, help: "输出目录，每段通话在此生成带时间戳的 .m4a；同名时追加序号。")
     var outputDir: String?
 
     @Option(help: "采样率（Hz）。")
@@ -36,14 +36,14 @@ struct WatchCommand: AsyncParsableCommand {
         guard !app.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ValidationError("--app 不能为空。")
         }
-        guard (1...48_000).contains(sampleRate) else {
-            throw ValidationError("--sample-rate 必须在 1...48000 Hz 范围内（当前 \(sampleRate)）。")
+        guard AudioFormatConstraints.sampleRates.contains(sampleRate) else {
+            throw ValidationError("--sample-rate 必须在 8000...48000 Hz 范围内（当前 \(sampleRate)）。")
         }
-        guard (1...2).contains(channels) else {
+        guard AudioFormatConstraints.channelCounts.contains(channels) else {
             throw ValidationError("--channels 只能是 1 或 2（当前 \(channels)）。")
         }
-        guard silence >= 0 else {
-            throw ValidationError("--silence 不能为负数（当前 \(silence)）。")
+        guard silence.isFinite, silence >= 0 else {
+            throw ValidationError("--silence 必须是有限的非负数（当前 \(silence)）。")
         }
     }
 
@@ -158,13 +158,15 @@ struct WatchCommand: AsyncParsableCommand {
         do {
             let targetApp = try await ContentResolver.findApp(matching: bundleID)
             let filter = try await ContentResolver.filter(for: targetApp)
-            let url = dir.appendingPathComponent("\(sanitize(appName))-\(timestamp()).m4a")
+            let stem = "\(sanitize(appName))-\(timestamp())"
+            let url = URL.uniqueFile(in: dir, stem: stem, pathExtension: "m4a")
 
             let engine = AudioCaptureEngine(
                 outputURL: url,
                 capturesMicrophone: true,
                 sampleRate: sampleRate,
                 channelCount: channels,
+                overwritesExistingOutput: false,
                 logger: logger
             )
             try await engine.start(filter: filter)
@@ -194,10 +196,14 @@ struct WatchCommand: AsyncParsableCommand {
     }
 
     /// 解析并校验输出目录（默认当前目录），支持 `~` 展开。
-    private func outputDirectory() throws -> URL {
+    func outputDirectory(fileManager: FileManager = .default) throws -> URL {
         let dir = outputDir.map { URL(expandingPath: $0) }
             ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        guard FileManager.default.isWritableFile(atPath: dir.path) else {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: dir.path, isDirectory: &isDirectory),
+              isDirectory.boolValue,
+              fileManager.isWritableFile(atPath: dir.path)
+        else {
             throw RecorderError.outputNotWritable(path: dir.path)
         }
         return dir
