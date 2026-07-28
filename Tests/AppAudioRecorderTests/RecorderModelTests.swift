@@ -171,9 +171,10 @@ final class RecorderModelTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
+        let savedURL = directory.appendingPathComponent("saved.m4a")
         let engine = ModelRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: true,
+            stopResult: RecordingResult(
+                outputURL: savedURL,
                 recordedSeconds: 4.5,
                 warning: nil
             )
@@ -188,10 +189,7 @@ final class RecorderModelTests: XCTestCase {
                 startedApplication = application
                 startedOutputURL = outputURL
                 startedConfiguration = configuration
-                return RecordingSession(
-                    engine: engine,
-                    outputURL: outputURL
-                )
+                return RecordingSession(engine: engine)
             }
         )
         model.outputDirectory = directory
@@ -218,7 +216,7 @@ final class RecorderModelTests: XCTestCase {
             !model.isActive
         }
 
-        XCTAssertEqual(model.latestOutputURL, startedOutputURL)
+        XCTAssertEqual(model.latestOutputURL, savedURL)
         XCTAssertTrue(model.statusMessage.contains("4.5"))
         let stopCount = await engine.stopCount
         XCTAssertEqual(stopCount, 1)
@@ -231,9 +229,10 @@ final class RecorderModelTests: XCTestCase {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let warning = RecorderError.audioCaptureFailed.localizedDescription
+        let savedURL = directory.appendingPathComponent("saved.m4a")
         let engine = ModelRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: true,
+            stopResult: RecordingResult(
+                outputURL: savedURL,
                 recordedSeconds: 2,
                 warning: warning
             )
@@ -241,8 +240,8 @@ final class RecorderModelTests: XCTestCase {
         let model = RecorderModel(
             defaults: defaults,
             notifyCallDetected: {},
-            recordingStarter: { _, outputURL, _ in
-                RecordingSession(engine: engine, outputURL: outputURL)
+            recordingStarter: { _, _, _ in
+                RecordingSession(engine: engine)
             }
         )
         model.outputDirectory = directory
@@ -276,8 +275,8 @@ final class RecorderModelTests: XCTestCase {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let engine = ModelRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: true,
+            stopResult: RecordingResult(
+                outputURL: directory.appendingPathComponent("saved.m4a"),
                 recordedSeconds: 1,
                 warning: nil
             )
@@ -286,12 +285,9 @@ final class RecorderModelTests: XCTestCase {
         let model = RecorderModel(
             defaults: defaults,
             notifyCallDetected: {},
-            recordingStarter: { application, outputURL, _ in
+            recordingStarter: { application, _, _ in
                 startedApplication = application
-                return RecordingSession(
-                    engine: engine,
-                    outputURL: outputURL
-                )
+                return RecordingSession(engine: engine)
             }
         )
         model.outputDirectory = directory
@@ -399,10 +395,10 @@ final class RecorderModelTests: XCTestCase {
 private actor ModelRecordingEngine: RecordingEngine {
     private let events: AsyncStream<RecordingEngineEvent>
     private let continuation: AsyncStream<RecordingEngineEvent>.Continuation
-    private let stopResult: RecordingEngineStopResult
+    private let stopResult: RecordingResult
     private(set) var stopCount = 0
 
-    init(stopResult: RecordingEngineStopResult) {
+    init(stopResult: RecordingResult) {
         self.stopResult = stopResult
         (events, continuation) = AsyncStream.makeStream(
             bufferingPolicy: .unbounded
@@ -417,7 +413,7 @@ private actor ModelRecordingEngine: RecordingEngine {
         continuation.yield(event)
     }
 
-    func stop() async -> RecordingEngineStopResult {
+    func stop() async -> RecordingResult {
         stopCount += 1
         continuation.finish()
         return stopResult

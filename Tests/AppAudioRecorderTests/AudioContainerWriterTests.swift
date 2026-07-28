@@ -60,7 +60,7 @@ final class AudioContainerWriterTests: XCTestCase {
             makeSampleBuffer(frameCount: 4_000, presentationTime: .zero),
             to: .app
         )
-        XCTAssertEqual(writer.appFrames, 0)
+        XCTAssertEqual(writer.recordedFrames, 0)
 
         try writer.append(
             makeSampleBuffer(
@@ -69,7 +69,7 @@ final class AudioContainerWriterTests: XCTestCase {
             ),
             to: .app
         )
-        XCTAssertEqual(writer.appFrames, 8_000)
+        XCTAssertEqual(writer.recordedFrames, 8_000)
 
         try writer.finalizeInputs()
         try await writer.completeWriting()
@@ -245,7 +245,7 @@ final class AudioContainerWriterTests: XCTestCase {
             to: .app
         )
 
-        XCTAssertEqual(writer.appFrames, 3_200)
+        XCTAssertEqual(writer.recordedFrames, 3_200)
         try writer.finalizeInputs()
         try await writer.completeWriting()
 

@@ -9,12 +9,6 @@ struct CapturableApplication: Identifiable, Hashable, Sendable {
     let name: String
     let bundleIdentifier: String
     let processID: Int32
-
-    init(name: String, bundleIdentifier: String, processID: Int32) {
-        self.name = name
-        self.bundleIdentifier = bundleIdentifier
-        self.processID = processID
-    }
 }
 
 struct RecordingResult: Sendable {
@@ -29,29 +23,20 @@ enum RecordingEngineEvent: Sendable {
     case failure(RecorderError)
 }
 
-struct RecordingEngineStopResult: Sendable {
-    let outputCompleted: Bool
-    let recordedSeconds: Double
-    let warning: String?
-}
-
 protocol RecordingEngine: Sendable {
     func eventStream() async -> AsyncStream<RecordingEngineEvent>
-    func stop() async -> RecordingEngineStopResult
+    func stop() async -> RecordingResult
 }
 
 extension AudioCaptureEngine: RecordingEngine {}
 
 /// 一段正在进行的录制。停止操作幂等，便于异常与退出流程并发收尾。
 actor RecordingSession {
-    nonisolated let outputURL: URL
-
     private let engine: any RecordingEngine
     private var stopTask: Task<RecordingResult, Never>?
 
-    init(engine: any RecordingEngine, outputURL: URL) {
+    init(engine: any RecordingEngine) {
         self.engine = engine
-        self.outputURL = outputURL
     }
 
     func eventStream() async -> AsyncStream<RecordingEngineEvent> {
@@ -62,17 +47,8 @@ actor RecordingSession {
         if let stopTask {
             return await stopTask.value
         }
-
         let engine = self.engine
-        let outputURL = self.outputURL
-        let task = Task {
-            let result = await engine.stop()
-            return RecordingResult(
-                outputURL: result.outputCompleted ? outputURL : nil,
-                recordedSeconds: result.recordedSeconds,
-                warning: result.warning
-            )
-        }
+        let task = Task { await engine.stop() }
         stopTask = task
         return await task.value
     }
@@ -107,6 +83,6 @@ enum Recorder {
             configuration: configuration
         )
         try await engine.start(filter: filter)
-        return RecordingSession(engine: engine, outputURL: outputURL)
+        return RecordingSession(engine: engine)
     }
 }

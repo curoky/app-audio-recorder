@@ -100,7 +100,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         events
     }
 
-    func stop() async -> RecordingEngineStopResult {
+    func stop() async -> RecordingResult {
         var stopError: Error?
         if let stream {
             do {
@@ -180,8 +180,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             logger.debug("容器已写出：\(self.outputURL.path, privacy: .public)")
         }
 
-        return RecordingEngineStopResult(
-            outputCompleted: outputCompleted,
+        return RecordingResult(
+            outputURL: outputCompleted ? outputURL : nil,
             recordedSeconds: recordedSeconds,
             warning: warnings.isEmpty ? nil : warnings.joined(separator: "\n")
         )

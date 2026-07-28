@@ -3,12 +3,12 @@ import CoreAudio
 import Foundation
 import OSLog
 
-struct ProcessAudioActivity: Equatable {
+struct ProcessAudioActivity {
     let usesInput: Bool
     let usesOutput: Bool
 }
 
-struct CallActivityEvent: Equatable, Sendable {
+struct CallActivityEvent: Sendable {
     let bundleIdentifier: String
     let isActive: Bool
 }

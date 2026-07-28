@@ -42,9 +42,7 @@ nonisolated final class AudioContainerWriter {
     private var trackFormats: [Track: TrackFormat] = [:]
     private var writtenFrames: [Track: AVAudioFramePosition] = [:]
 
-    /// 已写入 app 轨的帧数，供结束时估算时长。
-    private(set) var appFrames: AVAudioFramePosition = 0
-
+    /// 已写入的最大轨帧数，供结束时估算录音时长。
     var recordedFrames: AVAudioFramePosition {
         writtenFrames.values.max() ?? 0
     }
@@ -398,9 +396,6 @@ nonisolated final class AudioContainerWriter {
         }
         let frameCount = AVAudioFramePosition(CMSampleBufferGetNumSamples(sampleBuffer))
         writtenFrames[track, default: 0] += frameCount
-        if track == .app {
-            appFrames += frameCount
-        }
         return true
     }
 }

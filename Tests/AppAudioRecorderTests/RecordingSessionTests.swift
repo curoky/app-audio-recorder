@@ -5,15 +5,15 @@ import XCTest
 
 final class RecordingSessionTests: XCTestCase {
     func testConcurrentStopsOnlyStopEngineOnce() async {
+        let output = URL(fileURLWithPath: "/tmp/recording.m4a")
         let engine = StubRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: true,
+            stopResult: RecordingResult(
+                outputURL: output,
                 recordedSeconds: 12.5,
                 warning: nil
             )
         )
-        let output = URL(fileURLWithPath: "/tmp/recording.m4a")
-        let session = RecordingSession(engine: engine, outputURL: output)
+        let session = RecordingSession(engine: engine)
 
         async let first = session.stop()
         async let second = session.stop()
@@ -27,18 +27,15 @@ final class RecordingSessionTests: XCTestCase {
     }
 
     func testCompletedOutputCanCarryCaptureWarning() async {
+        let output = URL(fileURLWithPath: "/tmp/recording.m4a")
         let engine = StubRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: true,
+            stopResult: RecordingResult(
+                outputURL: output,
                 recordedSeconds: 3,
                 warning: RecorderError.audioCaptureFailed.localizedDescription
             )
         )
-        let output = URL(fileURLWithPath: "/tmp/recording.m4a")
-        let session = RecordingSession(
-            engine: engine,
-            outputURL: output
-        )
+        let session = RecordingSession(engine: engine)
 
         let result = await session.stop()
 
@@ -52,16 +49,13 @@ final class RecordingSessionTests: XCTestCase {
 
     func testIncompleteOutputIsNotReportedAsSaved() async {
         let engine = StubRecordingEngine(
-            stopResult: RecordingEngineStopResult(
-                outputCompleted: false,
+            stopResult: RecordingResult(
+                outputURL: nil,
                 recordedSeconds: 3,
                 warning: "写入失败"
             )
         )
-        let session = RecordingSession(
-            engine: engine,
-            outputURL: URL(fileURLWithPath: "/tmp/recording.m4a")
-        )
+        let session = RecordingSession(engine: engine)
 
         let result = await session.stop()
 
@@ -72,9 +66,9 @@ final class RecordingSessionTests: XCTestCase {
 
 private actor StubRecordingEngine: RecordingEngine {
     private(set) var stopCount = 0
-    private let stopResult: RecordingEngineStopResult
+    private let stopResult: RecordingResult
 
-    init(stopResult: RecordingEngineStopResult) {
+    init(stopResult: RecordingResult) {
         self.stopResult = stopResult
     }
 
@@ -84,7 +78,7 @@ private actor StubRecordingEngine: RecordingEngine {
         }
     }
 
-    func stop() async -> RecordingEngineStopResult {
+    func stop() async -> RecordingResult {
         stopCount += 1
         await Task.yield()
         return stopResult
