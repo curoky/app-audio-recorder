@@ -33,10 +33,13 @@ tasks:
       - swift test {{.SANDBOX_FLAG}}
 
   app:bundle:
-    desc: 构建并组装 App Audio Recorder.app；SIGN_IDENTITY 可指定签名证书，默认 ad-hoc
+    desc: 构建并组装 App Audio Recorder.app；SIGN_IDENTITY 指定签名证书，默认用本地稳定证书保留 TCC 权限
     deps: [build:release]
     vars:
-      SIGN_IDENTITY: '{{.SIGN_IDENTITY | default "-"}}'
+      # 默认用本地自签名的 code signing 证书（钥匙串助理创建，名称须一致），签名身份稳定，
+      # 重编不会让 TCC 把 App 当成新身份而重置录屏/麦克风权限。证书缺失时 codesign 直接报错，
+      # 不静默回退 ad-hoc。临时 ad-hoc 打包传 SIGN_IDENTITY=- 覆盖。
+      SIGN_IDENTITY: '{{.SIGN_IDENTITY | default "App Audio Recorder Dev"}}'
     cmds:
       - mkdir -p "{{.APP_BUNDLE}}/Contents/MacOS"
       - cp "{{.RELEASE_BIN}}" "{{.APP_BUNDLE}}/Contents/MacOS/"

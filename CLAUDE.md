@@ -61,8 +61,10 @@ task merge -- ~/Music/App\ Audio\ Recorder/WeChat-2026-07-28-120000.m4a
 task clean
 ```
 
-`app:bundle` 会组装并签名 `.build/release/App Audio Recorder.app`。默认使用 ad-hoc
-签名；可通过 `SIGN_IDENTITY="Apple Development: ..."` 指定稳定开发签名。
+`app:bundle` 会组装并签名 `.build/release/App Audio Recorder.app`。默认使用本地自签名证书
+`App Audio Recorder Dev`（钥匙串助理创建的 Code Signing 自签名根证书），签名身份稳定，
+重编不会让 TCC 把 App 当成新身份而重置录屏/麦克风权限。临时 ad-hoc 打包传 `SIGN_IDENTITY=-`
+覆盖；换 Apple Development 证书传 `SIGN_IDENTITY="Apple Development: ..."`。
 
 ## 界面配置
 
