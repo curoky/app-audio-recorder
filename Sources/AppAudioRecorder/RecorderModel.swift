@@ -5,6 +5,12 @@ import Observation
 @MainActor
 @Observable
 final class RecorderModel {
+    typealias RecordingStarter = @MainActor (
+        CapturableApplication,
+        URL,
+        RecordingConfiguration
+    ) async throws -> RecordingSession
+
     var applications: [CapturableApplication] = []
     private(set) var selectedBundleIdentifier: String?
     private(set) var monitoredBundleIdentifiers: Set<String>
@@ -26,6 +32,7 @@ final class RecorderModel {
     @ObservationIgnored private var operationTask: Task<Void, Never>?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let notifyCallDetected: @MainActor () -> Void
+    @ObservationIgnored private let recordingStarter: RecordingStarter
     private var monitoredApplicationsByBundleIdentifier:
         [String: CapturableApplication] = [:]
     private var activeCallBundleIdentifiers: Set<String> = []
@@ -42,10 +49,21 @@ final class RecorderModel {
         notifyCallDetected: @escaping @MainActor () -> Void = {
             NSSound.beep()
             NSApplication.shared.requestUserAttention(.informationalRequest)
+        },
+        recordingStarter: @escaping RecordingStarter = {
+            application,
+            outputURL,
+            configuration in
+            try await Recorder.startRecording(
+                application: application,
+                outputURL: outputURL,
+                configuration: configuration
+            )
         }
     ) {
         self.defaults = defaults
         self.notifyCallDetected = notifyCallDetected
+        self.recordingStarter = recordingStarter
         selectedBundleIdentifier = defaults.string(forKey: Self.selectedBundleIdentifierKey)
         monitoredBundleIdentifiers = Set(
             defaults.stringArray(forKey: Self.monitoredBundleIdentifiersKey) ?? []
@@ -275,10 +293,10 @@ final class RecorderModel {
                 applicationName: application.name,
                 in: outputDirectory
             )
-            let session = try await Recorder.startRecording(
-                application: application,
-                outputURL: outputURL,
-                configuration: recordingConfiguration
+            let session = try await recordingStarter(
+                application,
+                outputURL,
+                recordingConfiguration
             )
             guard !Task.isCancelled else {
                 _ = await session.stop()

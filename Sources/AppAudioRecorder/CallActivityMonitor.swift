@@ -13,13 +13,38 @@ struct CallActivityEvent: Equatable, Sendable {
     let isActive: Bool
 }
 
+struct CallActivityDebouncer: Sendable {
+    private static let requiredInactivePolls = 2
+
+    private(set) var isActive = false
+    private var inactivePollCount = 0
+
+    /// 返回去抖后的状态变化；`nil` 表示本轮不应发出事件。
+    mutating func update(rawIsActive: Bool) -> Bool? {
+        if rawIsActive {
+            inactivePollCount = 0
+            guard !isActive else { return nil }
+            isActive = true
+            return true
+        }
+
+        guard isActive else { return nil }
+        inactivePollCount += 1
+        guard inactivePollCount >= Self.requiredInactivePolls else {
+            return nil
+        }
+        inactivePollCount = 0
+        isActive = false
+        return false
+    }
+}
+
 /// 每三秒轮询多个目标 app 家族的 CoreAudio 进程活动，并分别输出去抖后的疑似通话状态。
 ///
 /// 输入与输出可以由同一 app 的不同 helper 进程承载，因此按 bundle family 聚合：
-/// 家族内至少一路输入且至少一路输出同时活动时才视为通话。
+/// 家族内至少一路输入且至少一路输出同时活动时才视为通话；连续两轮无活动才判定结束。
 final class CallActivityMonitor: @unchecked Sendable {
     private static let pollingInterval: TimeInterval = 3
-    private static let endDelay: TimeInterval = 2
 
     private let queue = DispatchQueue(label: "app-audio-recorder.call-monitor")
     private let targets: [Target]
@@ -29,8 +54,7 @@ final class CallActivityMonitor: @unchecked Sendable {
 
     // 以下状态仅在 `queue` 上访问。
     private var pollingTimer: DispatchSourceTimer?
-    private var activeBundleIdentifiers: Set<String> = []
-    private var pendingStops: [String: DispatchWorkItem] = [:]
+    private var activityDebouncers: [String: CallActivityDebouncer] = [:]
 
     init(targetBundleIdentifiers: Set<String>) {
         targets = targetBundleIdentifiers.sorted().map {
@@ -68,10 +92,9 @@ final class CallActivityMonitor: @unchecked Sendable {
     /// 停止轮询并结束事件流（幂等）。
     func stop() {
         queue.async { [self] in
-            pendingStops.values.forEach { $0.cancel() }
-            pendingStops.removeAll()
             pollingTimer?.cancel()
             pollingTimer = nil
+            activityDebouncers.removeAll()
             continuation.finish()
         }
     }
@@ -100,39 +123,23 @@ final class CallActivityMonitor: @unchecked Sendable {
     }
 
     private func updateState(bundleIdentifier: String, isActive: Bool) {
-        if isActive {
-            pendingStops.removeValue(forKey: bundleIdentifier)?.cancel()
-            guard activeBundleIdentifiers.insert(bundleIdentifier).inserted else {
-                return
-            }
-            logger.info("检测到 \(bundleIdentifier, privacy: .public) 同时使用音频输入与输出")
-            continuation.yield(
-                CallActivityEvent(
-                    bundleIdentifier: bundleIdentifier,
-                    isActive: true
-                )
-            )
-            return
-        }
+        let transition = activityDebouncers[
+            bundleIdentifier,
+            default: CallActivityDebouncer()
+        ].update(rawIsActive: isActive)
+        guard let transition else { return }
 
-        guard activeBundleIdentifiers.contains(bundleIdentifier),
-            pendingStops[bundleIdentifier] == nil
-        else { return }
-        let work = DispatchWorkItem { [self] in
-            pendingStops[bundleIdentifier] = nil
-            guard activeBundleIdentifiers.remove(bundleIdentifier) != nil else {
-                return
-            }
+        if transition {
+            logger.info("检测到 \(bundleIdentifier, privacy: .public) 同时使用音频输入与输出")
+        } else {
             logger.info("\(bundleIdentifier, privacy: .public) 通话活动结束")
-            continuation.yield(
-                CallActivityEvent(
-                    bundleIdentifier: bundleIdentifier,
-                    isActive: false
-                )
-            )
         }
-        pendingStops[bundleIdentifier] = work
-        queue.asyncAfter(deadline: .now() + Self.endDelay, execute: work)
+        continuation.yield(
+            CallActivityEvent(
+                bundleIdentifier: bundleIdentifier,
+                isActive: transition
+            )
+        )
     }
 
     // MARK: - CoreAudio 读取辅助

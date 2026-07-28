@@ -290,18 +290,18 @@ nonisolated final class AudioContainerWriter {
     private func padShorterTracks() throws {
         guard let finalEnd = nextExpectedPTS.values.max(by: {
             CMTimeCompare($0, $1) < 0
-        }) else { return }
+        }), let sessionOrigin, let fallbackFormat = trackFormats.values.first
+        else { return }
 
         for track in expectedTracks {
-            guard let start = nextExpectedPTS[track],
-                CMTimeCompare(start, finalEnd) < 0,
-                let input = inputs[track],
-                let format = trackFormats[track]
+            let start = nextExpectedPTS[track] ?? sessionOrigin
+            guard CMTimeCompare(start, finalEnd) < 0,
+                let input = inputs[track]
             else { continue }
             try appendSilence(
                 from: start,
                 to: finalEnd,
-                format: format,
+                format: trackFormats[track] ?? fallbackFormat,
                 track: track,
                 input: input
             )

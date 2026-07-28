@@ -240,6 +240,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     private func startDiskSpaceMonitor() {
         guard diskSpaceTimer == nil else { return }
+        checkDiskSpace()
+        guard failure == nil else { return }
+
         let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
         timer.schedule(deadline: .now() + 30, repeating: 30)
         timer.setEventHandler { [weak self] in

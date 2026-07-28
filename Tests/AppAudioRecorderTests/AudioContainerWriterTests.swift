@@ -74,6 +74,43 @@ final class AudioContainerWriterTests: XCTestCase {
         try writer.finalizeInputs()
         try await writer.completeWriting()
         XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 2)
+        for track in tracks {
+            let timeRange = try await track.load(.timeRange)
+            XCTAssertEqual(timeRange.duration.seconds, 1, accuracy: 0.001)
+        }
+    }
+
+    func testFinalizeSynthesizesCompletelyMissingAppTrack() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("missing-app.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
+        )
+
+        try writer.append(
+            makeSampleBuffer(frameCount: 8_000, presentationTime: .zero),
+            to: .mic
+        )
+        try writer.finalizeInputs()
+        try await writer.completeWriting()
+
+        let asset = AVURLAsset(url: output)
+        let tracks = try await asset.loadTracks(withMediaType: .audio)
+        XCTAssertEqual(tracks.count, 2)
+        for track in tracks {
+            let timeRange = try await track.load(.timeRange)
+            XCTAssertEqual(timeRange.duration.seconds, 1, accuracy: 0.001)
+        }
     }
 
     func testWritesTwoTracksWithRelativeStartOffset() async throws {
