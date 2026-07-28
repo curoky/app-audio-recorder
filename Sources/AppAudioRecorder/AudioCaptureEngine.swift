@@ -26,6 +26,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var writerError: Error?
     private var diskSpaceTimer: DispatchSourceTimer?
     private var didWarnAboutDiskSpace = false
+    /// 录制期间持有的休眠抑制凭据；防止系统在长时间录音（尤其无人值守）时睡眠截断音频。
+    private var sleepAssertion: NSObjectProtocol?
 
     /// - Parameters:
     ///   - outputURL: 多轨容器落盘路径。
@@ -86,6 +88,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             try await stream.startCapture()
             self.stream = stream
+            beginSleepAssertion()
             sampleQueue.sync {
                 startDiskSpaceMonitor()
             }
@@ -122,6 +125,7 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             }
             self.stream = nil
         }
+        endSleepAssertion()
 
         let (
             writerToFinish,
@@ -129,8 +133,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             recordedWriterError,
             finalizationError,
             recordedSeconds,
-            appDroppedBuffers,
-            micDroppedBuffers
+            appHealth,
+            micHealth
         ) = sampleQueue.sync {
             stopDiskSpaceMonitor()
             var finalizationError: Error?
@@ -148,14 +152,16 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 writerError,
                 finalizationError,
                 seconds,
-                writer?.droppedBufferCount(for: .app) ?? 0,
-                writer?.droppedBufferCount(for: .mic) ?? 0
+                writer?.health(for: .app) ?? .empty,
+                configuration.capturesMicrophone
+                    ? writer?.health(for: .mic) ?? .empty
+                    : nil
             )
         }
         eventContinuation.finish()
-        if appDroppedBuffers > 0 || micDroppedBuffers > 0 {
+        if appHealth.droppedBuffers > 0 || (micHealth?.droppedBuffers ?? 0) > 0 {
             logger.warning(
-                "写盘背压丢弃缓冲：app \(appDroppedBuffers)，mic \(micDroppedBuffers)"
+                "写盘背压丢弃缓冲：app \(appHealth.droppedBuffers)，mic \(micHealth?.droppedBuffers ?? 0)"
             )
         }
 
@@ -194,6 +200,13 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         if !outputCompleted {
             warnings.append("录音文件未能完成写入，已移除无效文件。")
         } else {
+            // 文件写出成功不代表两路都真的有声音：缺轨、全程静音、大量丢帧都会让文件不可用。
+            // 仅在保存成功时追加健康提示，让用户在录制刚结束、还能补救时就发现问题。
+            for message in RecordingHealth.warnings(app: appHealth, mic: micHealth)
+            where !warnings.contains(message) {
+                logger.warning("轨道健康提示：\(message, privacy: .public)")
+                warnings.append(message)
+            }
             logger.debug("容器已写出：\(self.outputURL.path, privacy: .public)")
         }
 
@@ -234,6 +247,22 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         sampleQueue.async {
             self.recordFailure(Self.recorderError(from: error))
         }
+    }
+
+    // MARK: - 休眠抑制
+
+    private func beginSleepAssertion() {
+        guard sleepAssertion == nil else { return }
+        sleepAssertion = ProcessInfo.processInfo.beginActivity(
+            options: [.idleSystemSleepDisabled, .automaticTerminationDisabled],
+            reason: "正在录制音频"
+        )
+    }
+
+    private func endSleepAssertion() {
+        guard let sleepAssertion else { return }
+        ProcessInfo.processInfo.endActivity(sleepAssertion)
+        self.sleepAssertion = nil
     }
 
     // MARK: - 磁盘监控（仅在 sampleQueue 上调用）

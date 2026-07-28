@@ -312,6 +312,73 @@ final class AudioContainerWriterTests: XCTestCase {
         XCTAssertThrowsError(try writer.finalizeInputs())
     }
 
+    func testHealthReportsCapturedFramesAndPeakForRealAudio() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("health-audible.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
+        )
+
+        try writer.append(
+            makeSampleBuffer(frameCount: 800, presentationTime: .zero, amplitude: 0.5),
+            to: .app
+        )
+        try writer.append(
+            makeSampleBuffer(frameCount: 800, presentationTime: .zero, amplitude: 0.01),
+            to: .mic
+        )
+
+        let appHealth = writer.health(for: .app)
+        XCTAssertEqual(appHealth.capturedFrames, 800)
+        XCTAssertTrue(appHealth.didMeasurePeak)
+        XCTAssertEqual(appHealth.peakAmplitude, 0.5, accuracy: 0.000_1)
+        XCTAssertEqual(writer.health(for: .mic).capturedFrames, 800)
+
+        writer.cancelWriting(removeOutput: true)
+    }
+
+    func testHealthReportsSilentMicTrackAndEmptyAppTrack() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let output = directory.appendingPathComponent("health-silent.m4a")
+        let writer = try AudioContainerWriter(
+            outputURL: output,
+            configuration: RecordingConfiguration(
+                sampleRate: .hz8K,
+                channelCount: .mono,
+                capturesMicrophone: true
+            )
+        )
+
+        // 麦克风轨收到样本但全是零；app 轨从未收到真实样本。
+        try writer.append(
+            makeSampleBuffer(frameCount: 800, presentationTime: .zero, amplitude: 0),
+            to: .mic
+        )
+
+        // finalize 会启动会话、回放暂存样本并为缺失的 app 轨补静音。
+        try writer.finalizeInputs()
+
+        // 麦克风：真实样本被测量到，峰值为零 → 判定为静音。
+        let micHealth = writer.health(for: .mic)
+        XCTAssertEqual(micHealth.capturedFrames, 800)
+        XCTAssertTrue(micHealth.didMeasurePeak)
+        XCTAssertEqual(micHealth.peakAmplitude, 0, accuracy: 0.000_1)
+
+        // App：从未有真实样本，合成静音不计入真实捕获帧数。
+        let appHealth = writer.health(for: .app)
+        XCTAssertEqual(appHealth.capturedFrames, 0)
+        XCTAssertFalse(appHealth.didMeasurePeak)
+
+        writer.cancelWriting(removeOutput: true)
+    }
+
     private func totalFrameCount(asset: AVAsset, track: AVAssetTrack) throws -> Int {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(
@@ -398,7 +465,8 @@ final class AudioContainerWriterTests: XCTestCase {
         frameCount: Int,
         presentationTime: CMTime,
         sampleRate: Int = 8_000,
-        channels: Int = 1
+        channels: Int = 1,
+        amplitude: Float = 0.125
     ) throws -> CMSampleBuffer {
         let bytesPerFrame = channels * MemoryLayout<Float>.size
         var streamDescription = AudioStreamBasicDescription(
@@ -444,7 +512,7 @@ final class AudioContainerWriterTests: XCTestCase {
             throw TestError.coreMediaStatus(blockStatus)
         }
 
-        let samples = [Float](repeating: 0.125, count: frameCount * channels)
+        let samples = [Float](repeating: amplitude, count: frameCount * channels)
         let copyStatus = samples.withUnsafeBytes {
             CMBlockBufferReplaceDataBytes(
                 with: $0.baseAddress!,
