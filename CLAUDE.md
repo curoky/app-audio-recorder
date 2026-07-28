@@ -74,6 +74,9 @@ task clean
 - 采样率：8、16、24、32、44.1、48 kHz，默认 48 kHz。
 - 声道：单声道、立体声，默认立体声。
 - 麦克风：可关闭，默认开启。
+- 输入设备：默认「跟随系统默认（自动切换）」，即不指定设备、由系统选定当前默认输入；
+  用户可在界面主动锁定某个具体设备（透传其 CoreAudio UID 给 `SCStreamConfiguration.microphoneCaptureDeviceID`），
+  选择会被记住，锁定的设备若不再存在则回落到系统默认。
 - 监听 App：可多选并记住上次选择，同一已适配 App 家族只保留一个目标。
 - 通话提醒：默认关闭，开启后锁定监听 App 列表；手动录制目标和录制参数仍保持独立。
 
@@ -123,6 +126,7 @@ task merge GAIN=0.5 -- recording.m4a
 | `ApplicationPicker.swift` | 可搜索、按普通 App 与后台进程分组的单选/多选控件 |
 | `RecorderModel.swift` | 主线程 UI 状态、手动录制和通话提醒编排 |
 | `RecordingConfiguration.swift` | 类型安全的录制选项 |
+| `AudioInputDevice.swift` | 枚举可用麦克风输入设备（用户主动锁定设备时用） |
 | `Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
 | `ContentResolver.swift` | 枚举运行中 app、重新解析所选进程、构建捕获过滤器 |
 | `CallApplication.swift` | 通话 app 目录与主进程/helper 归属规则 |

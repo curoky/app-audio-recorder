@@ -159,6 +159,27 @@ struct RecorderView: View {
                 }
 
                 GridRow {
+                    Text("输入设备")
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.recordingConfiguration.microphoneDeviceID },
+                            set: { model.selectMicrophoneDevice(id: $0) }
+                        )
+                    ) {
+                        Text(systemDefaultInputTitle).tag(String?.none)
+                        ForEach(model.audioInputDevices) { device in
+                            Text(device.name).tag(String?.some(device.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .disabled(
+                        model.isRecordingConfigurationLocked
+                            || !model.recordingConfiguration.capturesMicrophone
+                    )
+                }
+
+                GridRow {
                     Text("采样率")
                     Picker(
                         "",
@@ -305,6 +326,13 @@ struct RecorderView: View {
         case .stereo:
             "立体声"
         }
+    }
+
+    private var systemDefaultInputTitle: String {
+        if let name = model.systemDefaultInputDeviceName {
+            return "跟随系统默认（当前：\(name)）"
+        }
+        return "跟随系统默认（自动切换）"
     }
 
     private var monitoredApplicationsTitle: String {

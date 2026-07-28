@@ -15,6 +15,10 @@ final class RecorderModel {
     private(set) var selectedBundleIdentifier: String?
     private(set) var monitoredBundleIdentifiers: Set<String>
     var recordingConfiguration = RecordingConfiguration()
+    /// 可选的麦克风输入设备；首项固定为“跟随系统默认（自动切换）”。
+    private(set) var audioInputDevices: [AudioInputDevice] = []
+    /// 系统当前默认输入设备名；跟随系统默认时用于在界面上显示实际会录哪个设备。
+    private(set) var systemDefaultInputDeviceName: String?
     var outputDirectory: URL
     var errorMessage: String?
     private(set) var callReminderMessage: String?
@@ -43,6 +47,7 @@ final class RecorderModel {
     private static let outputDirectoryKey = "outputDirectory"
     private static let selectedBundleIdentifierKey = "selectedBundleIdentifier"
     private static let monitoredBundleIdentifiersKey = "monitoredBundleIdentifiers"
+    private static let microphoneDeviceIDKey = "microphoneDeviceID"
 
     init(
         defaults: UserDefaults = .standard,
@@ -77,6 +82,10 @@ final class RecorderModel {
                 ?? FileManager.default.homeDirectoryForCurrentUser
             outputDirectory = music.appendingPathComponent("App Audio Recorder", isDirectory: true)
         }
+
+        recordingConfiguration.microphoneDeviceID = defaults.string(
+            forKey: Self.microphoneDeviceIDKey
+        )
     }
 
     var selectedApplication: CapturableApplication? {
@@ -141,6 +150,28 @@ final class RecorderModel {
         defaults.set(bundleIdentifier, forKey: Self.selectedBundleIdentifierKey)
     }
 
+    /// 重新枚举可用输入设备。若已锁定的设备不再存在，则回落到系统默认（自动切换）。
+    func refreshAudioInputDevices() {
+        audioInputDevices = AudioInputDevices.available()
+        systemDefaultInputDeviceName = AudioInputDevices.systemDefault()?.name
+        if let deviceID = recordingConfiguration.microphoneDeviceID,
+            !audioInputDevices.contains(where: { $0.id == deviceID })
+        {
+            selectMicrophoneDevice(id: nil)
+        }
+    }
+
+    /// 选择麦克风输入设备；`nil` 表示跟随系统默认（自动切换）。录制期间禁止修改。
+    func selectMicrophoneDevice(id: String?) {
+        guard !isRecordingConfigurationLocked else { return }
+        recordingConfiguration.microphoneDeviceID = id
+        if let id {
+            defaults.set(id, forKey: Self.microphoneDeviceIDKey)
+        } else {
+            defaults.removeObject(forKey: Self.microphoneDeviceIDKey)
+        }
+    }
+
     func toggleMonitoredApplication(bundleIdentifier: String) {
         guard !isCallMonitoring else { return }
         if monitoredBundleIdentifiers.remove(bundleIdentifier) == nil {
@@ -164,6 +195,7 @@ final class RecorderModel {
 
     func refreshApplications() async {
         guard !isTargetSelectionLocked else { return }
+        refreshAudioInputDevices()
         isRefreshing = true
         defer { isRefreshing = false }
 

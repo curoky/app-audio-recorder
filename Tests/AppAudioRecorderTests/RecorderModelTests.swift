@@ -35,7 +35,27 @@ final class RecorderModelTests: XCTestCase {
         XCTAssertEqual(model.recordingConfiguration.sampleRate, .hz48K)
         XCTAssertEqual(model.recordingConfiguration.channelCount, .stereo)
         XCTAssertTrue(model.recordingConfiguration.capturesMicrophone)
+        XCTAssertNil(model.recordingConfiguration.microphoneDeviceID)
         XCTAssertFalse(model.isCallMonitoring)
+    }
+
+    func testMicrophoneDeviceSelectionPersists() {
+        let suiteName = "RecorderModelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let firstModel = RecorderModel(defaults: defaults)
+        firstModel.selectMicrophoneDevice(id: "BuiltInMic-UID")
+        XCTAssertEqual(
+            RecorderModel(defaults: defaults).recordingConfiguration.microphoneDeviceID,
+            "BuiltInMic-UID"
+        )
+
+        // 选回“跟随系统默认”应清除持久化的设备。
+        firstModel.selectMicrophoneDevice(id: nil)
+        XCTAssertNil(
+            RecorderModel(defaults: defaults).recordingConfiguration.microphoneDeviceID
+        )
     }
 
     func testRecordingConfigurationOffersCommonAudioFormats() {

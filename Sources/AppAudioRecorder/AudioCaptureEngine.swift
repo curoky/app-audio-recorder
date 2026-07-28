@@ -65,6 +65,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             if configuration.capturesMicrophone {
                 // macOS 15+：让 SCStream 额外输出一路麦克风。两路共享同一时钟、同时开始。
                 config.captureMicrophone = true
+                // nil 时跟随系统默认输入设备（自动切换）；用户主动锁定某个设备时透传其 UID。
+                config.microphoneCaptureDeviceID = configuration.microphoneDeviceID
             }
             // 只要音频，视频压到最小以省资源。
             config.width = 2
