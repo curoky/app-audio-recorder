@@ -117,25 +117,32 @@ task merge GAIN=0.5 -- recording.m4a
 
 ## 架构
 
-全部 Swift 源码位于 `Sources/AppAudioRecorder/`，但职责仍保持单一：
+Swift 源码位于 `Sources/AppAudioRecorder/`，按职责分目录：`App/`（入口·界面·编排）、
+`Recording/`（核心录制）、`AppFamily/`（已适配 App 家族知识，核心与附加功能共享）、
+`CallDetection/`（通话检测附加功能）。分目录仅为可维护性，仍是单一 executable target。
 
 | 文件 | 职责 |
 | --- | --- |
-| `RecorderApp.swift` | SwiftUI 入口与退出前异步收尾 |
-| `RecorderView.swift` | 单窗口界面与录制参数控件 |
-| `ApplicationPicker.swift` | 可搜索、按普通 App 与后台进程分组的单选/多选控件 |
-| `RecorderModel.swift` | 主线程 UI 状态、手动录制和通话提醒编排 |
-| `RecordingConfiguration.swift` | 类型安全的录制选项 |
-| `AudioInputDevice.swift` | 枚举可用麦克风输入设备（用户主动锁定设备时用） |
-| `Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
-| `ContentResolver.swift` | 枚举运行中 app、重新解析所选进程、构建捕获过滤器 |
-| `CallApplication.swift` | 通话 app 目录与主进程/helper 归属规则 |
-| `CallActivityMonitor.swift` | 单次轮询多个 App 家族的 CoreAudio 活动及独立去重 |
-| `AudioCaptureEngine.swift` | SCStream 生命周期与 app/mic 样本分发 |
-| `AudioContainerWriter.swift` | AVAssetWriter 多轨 ALAC 写入及 PTS 对齐 |
-| `RecordingFiles.swift` | 输出目录校验、唯一文件名 |
-| `MicrophonePermission.swift` | 麦克风权限申请 |
-| `AppLog.swift` | OSLog category 工厂 |
+| `App/RecorderApp.swift` | SwiftUI 入口与退出前异步收尾 |
+| `App/RecorderView.swift` | 单窗口界面与录制参数控件 |
+| `App/ApplicationPicker.swift` | 可搜索、按普通 App 与后台进程分组的单选/多选控件 |
+| `App/RecorderModel.swift` | 主线程 UI 状态与手动录制编排；通话相关调用转发给协调器 |
+| `App/AppLog.swift` | OSLog category 工厂 |
+| `Recording/RecordingConfiguration.swift` | 类型安全的录制选项 |
+| `Recording/AudioInputDevice.swift` | 枚举可用麦克风输入设备（用户主动锁定设备时用） |
+| `Recording/Recorder.swift` | app DTO、录制启动和幂等 `RecordingSession` |
+| `Recording/ContentResolver.swift` | 枚举运行中 app、重新解析所选进程、构建捕获过滤器 |
+| `Recording/AudioCaptureEngine.swift` | SCStream 生命周期与 app/mic 样本分发 |
+| `Recording/AudioContainerWriter.swift` | AVAssetWriter 多轨 ALAC 写入及 PTS 对齐 |
+| `Recording/RecordingFiles.swift` | 输出目录校验、唯一文件名 |
+| `Recording/RecorderError.swift` | 可预期失败的 `RecorderError` 定义 |
+| `Recording/MicrophonePermission.swift` | 麦克风权限申请 |
+| `AppFamily/CallApplication.swift` | 通话 app 目录与主进程/helper 归属规则（`ApplicationBundleMatcher`） |
+| `CallDetection/CallMonitorCoordinator.swift` | 通话检测编排：监听选择持久化、监视器生命周期、提醒排队 |
+| `CallDetection/CallActivityMonitor.swift` | 单次轮询多个 App 家族的 CoreAudio 活动及独立去重 |
+
+`AppFamily/CallApplication.swift` 是核心与附加功能共享的边界：核心录制用 `ApplicationBundleMatcher`
+把 helper 进程归并进同一录音过滤器，通话检测复用同一家族规则，故不归入 `CallDetection/`。
 
 不增加只为假想调用方服务的公开 API、协议层或配置兼容分支。
 
