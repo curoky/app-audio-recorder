@@ -16,4 +16,8 @@ struct RecordingConfiguration: Equatable, Sendable {
     var sampleRate: SampleRate = .hz48K
     var channelCount: ChannelCount = .stereo
     var capturesMicrophone = true
+
+    /// 单段录音的硬上限（秒），到点自动停止并保存。用一个粗暴的固定上限，
+    /// 替代运行时磁盘轮询，避免无人值守时无限录制撑爆磁盘。默认 4 小时。
+    let maxDurationSeconds: Double = 4 * 60 * 60
 }

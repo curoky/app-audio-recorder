@@ -24,7 +24,8 @@ struct RecordingResult: Sendable {
 }
 
 enum RecordingEngineEvent: Sendable {
-    case warning(String)
+    /// 引擎请求正常停止并保存（如到达时长上限）；由模型走既有收尾流程。
+    case stopRequested
     case failure(RecorderError)
 }
 

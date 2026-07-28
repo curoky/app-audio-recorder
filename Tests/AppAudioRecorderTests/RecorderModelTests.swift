@@ -165,7 +165,7 @@ final class RecorderModelTests: XCTestCase {
         )
     }
 
-    func testManualRecordingLifecycleKeepsRecordingAfterWarning() async throws {
+    func testStopRequestedEventAutomaticallyStopsAndSavesOutput() async throws {
         let suiteName = "RecorderModelTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -212,15 +212,9 @@ final class RecorderModelTests: XCTestCase {
         XCTAssertEqual(startedConfiguration, RecordingConfiguration())
         XCTAssertEqual(startedOutputURL?.deletingLastPathComponent(), directory)
 
-        let warning = "磁盘空间偏低"
-        await engine.emit(.warning(warning))
-        await waitUntil("录制警告未传递到模型") {
-            model.errorMessage == warning
-        }
-        XCTAssertTrue(model.isRecording)
-
-        model.triggerPrimaryAction()
-        await waitUntil("录制未完成停止") {
+        // 引擎请求停止（如到达时长上限）应触发既有收尾流程并保存已录内容。
+        await engine.emit(.stopRequested)
+        await waitUntil("stopRequested 未触发自动停止") {
             !model.isActive
         }
 

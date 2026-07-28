@@ -74,7 +74,9 @@ App 选择器支持按名称或 bundle ID 搜索、单选录制目标或多选�
 - 写入期间按 PTS 补中途缺口，结束时为较短音轨补尾部静音；实时写盘背压只丢弃当前
   buffer，后续通过 PTS 缺口补齐时间线，不中止整段录制。
 - M4A 每 10 秒写一个 movie fragment，进程异常退出时尽量保留可恢复内容。
-- 启动时要求至少 100 MB 可用空间；低于 500 MB 提示，低于 100 MB 自动停止并收尾。
+- 录制时长有固定硬上限（`RecordingConfiguration.maxDurationSeconds`，默认 4 小时），
+  到点由引擎发 `stopRequested` 事件走正常收尾流程自动停止并保存。不做磁盘空间探测，
+  开录前的可用空间由用户自行确认。
 - 默认目录是 `~/Music/App Audio Recorder`，首次录制时自动创建。
 
 `task merge` 只适用于双轨容器，输出同目录下的 `<基名>-merged.wav`。默认混音增益为
@@ -118,7 +120,7 @@ task merge GAIN=0.5 -- recording.m4a
 ## 关键并发约束
 
 - `AudioCaptureEngine` 的 `writer`、`failure`、`writerError` 和 `AudioContainerWriter` 全部状态仅在串行
-  `sampleQueue` 上访问。磁盘监控 timer 与 `SCStreamDelegate` 错误回调也必须在该队列处理。
+  `sampleQueue` 上访问。时长上限 timer 与 `SCStreamDelegate` 错误回调也必须在该队列处理。
 - `AudioCaptureEngine` 的 `@unchecked Sendable` 依赖上述队列隔离前提；新增可变写入状态必须
   遵守同一约束。
 - `stop()` 先停止 SCStream，再在 `sampleQueue` 同步调用 `finalizeInputs()`，最后在队列外
@@ -137,7 +139,7 @@ task merge GAIN=0.5 -- recording.m4a
 - 多轨写入、首帧与中途 PTS 对齐、尾部补齐、迟到音轨、文件保护和取消清理。
 - 唯一文件名与输出目录校验。
 - 通话 app/helper 匹配、多 App 输入/输出活动判定、独立去重及提醒排队。
-- 磁盘水位策略、`RecordingSession.stop()` 并发幂等性及无效输出抑制。
+- `RecordingSession.stop()` 并发幂等性、无效输出抑制及 `stopRequested` 自动收尾。
 - GUI 默认配置和操作任务退出状态。
 
 ScreenCaptureKit 实际捕获、系统权限弹窗、GUI 交互和 `task merge` 仍需在有权限的真实

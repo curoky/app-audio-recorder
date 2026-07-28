@@ -24,8 +24,8 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
     private var stream: SCStream?
     private var failure: RecorderError?
     private var writerError: Error?
-    private var diskSpaceTimer: DispatchSourceTimer?
-    private var didWarnAboutDiskSpace = false
+    /// 到达配置的时长上限后自动收尾的一次性定时器；用简单粗暴的硬上限避免无人值守时无限录制。
+    private var durationLimitTimer: DispatchSourceTimer?
     /// 录制期间持有的休眠抑制凭据；防止系统在长时间录音（尤其无人值守）时睡眠截断音频。
     private var sleepAssertion: NSObjectProtocol?
 
@@ -48,15 +48,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
 
     func start(filter: SCContentFilter) async throws(RecorderError) {
         do {
-            let outputDirectory = outputURL.deletingLastPathComponent()
-            if let availableBytes = RecordingDiskSpace.availableBytes(in: outputDirectory),
-                RecordingDiskSpace.state(availableBytes: availableBytes) == .critical
-            {
-                throw RecorderError.insufficientDiskSpace(
-                    availableBytes: availableBytes
-                )
-            }
-
             // 容器写入器在采样队列上创建，与后续样本追加共用同一串行域。
             try sampleQueue.sync {
                 writer = try AudioContainerWriter(
@@ -89,15 +80,12 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             try await stream.startCapture()
             self.stream = stream
             beginSleepAssertion()
-            sampleQueue.sync {
-                startDiskSpaceMonitor()
-            }
+            startDurationLimit()
             logger.debug(
                 "捕获已启动：\(self.configuration.sampleRate.rawValue) Hz，\(self.configuration.channelCount.rawValue) 声道，麦克风 \(self.configuration.capturesMicrophone)"
             )
         } catch {
             sampleQueue.sync {
-                stopDiskSpaceMonitor()
                 writer?.cancelWriting(removeOutput: true)
                 writer = nil
             }
@@ -132,11 +120,9 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
             recordedFailure,
             recordedWriterError,
             finalizationError,
-            recordedSeconds,
-            appHealth,
-            micHealth
+            recordedSeconds
         ) = sampleQueue.sync {
-            stopDiskSpaceMonitor()
+            stopDurationLimit()
             var finalizationError: Error?
             do {
                 try writer?.finalizeInputs()
@@ -151,19 +137,10 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
                 failure,
                 writerError,
                 finalizationError,
-                seconds,
-                writer?.health(for: .app) ?? .empty,
-                configuration.capturesMicrophone
-                    ? writer?.health(for: .mic) ?? .empty
-                    : nil
+                seconds
             )
         }
         eventContinuation.finish()
-        if appHealth.droppedBuffers > 0 || (micHealth?.droppedBuffers ?? 0) > 0 {
-            logger.warning(
-                "写盘背压丢弃缓冲：app \(appHealth.droppedBuffers)，mic \(micHealth?.droppedBuffers ?? 0)"
-            )
-        }
 
         var completionError: Error?
         var outputCompleted = false
@@ -200,13 +177,6 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         if !outputCompleted {
             warnings.append("录音文件未能完成写入，已移除无效文件。")
         } else {
-            // 文件写出成功不代表两路都真的有声音：缺轨、全程静音、大量丢帧都会让文件不可用。
-            // 仅在保存成功时追加健康提示，让用户在录制刚结束、还能补救时就发现问题。
-            for message in RecordingHealth.warnings(app: appHealth, mic: micHealth)
-            where !warnings.contains(message) {
-                logger.warning("轨道健康提示：\(message, privacy: .public)")
-                warnings.append(message)
-            }
             logger.debug("容器已写出：\(self.outputURL.path, privacy: .public)")
         }
 
@@ -265,50 +235,27 @@ final class AudioCaptureEngine: NSObject, SCStreamOutput, SCStreamDelegate, @unc
         self.sleepAssertion = nil
     }
 
-    // MARK: - 磁盘监控（仅在 sampleQueue 上调用）
+    // MARK: - 时长上限（一次性定时器，仅在 sampleQueue 上调度）
 
-    private func startDiskSpaceMonitor() {
-        guard diskSpaceTimer == nil else { return }
-        checkDiskSpace()
-        guard failure == nil else { return }
-
-        let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
-        timer.schedule(deadline: .now() + 30, repeating: 30)
-        timer.setEventHandler { [weak self] in
-            self?.checkDiskSpace()
+    private func startDurationLimit() {
+        sampleQueue.sync {
+            guard durationLimitTimer == nil, failure == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: sampleQueue)
+            timer.schedule(deadline: .now() + configuration.maxDurationSeconds)
+            timer.setEventHandler { [weak self] in
+                guard let self, self.failure == nil else { return }
+                self.stopDurationLimit()
+                self.logger.notice("已达到录音时长上限，自动停止并保存。")
+                self.eventContinuation.yield(.stopRequested)
+            }
+            durationLimitTimer = timer
+            timer.resume()
         }
-        diskSpaceTimer = timer
-        timer.resume()
     }
 
-    private func stopDiskSpaceMonitor() {
-        diskSpaceTimer?.cancel()
-        diskSpaceTimer = nil
-    }
-
-    private func checkDiskSpace() {
-        guard failure == nil,
-            let availableBytes = RecordingDiskSpace.availableBytes(
-                in: outputURL.deletingLastPathComponent()
-            )
-        else { return }
-
-        switch RecordingDiskSpace.state(availableBytes: availableBytes) {
-        case .sufficient:
-            break
-        case .low:
-            guard !didWarnAboutDiskSpace else { return }
-            didWarnAboutDiskSpace = true
-            let megabytes = availableBytes / 1_000_000
-            let message = "磁盘空间偏低（剩余 \(megabytes) MB），请尽快结束录制或释放空间。"
-            logger.warning("\(message, privacy: .public)")
-            eventContinuation.yield(.warning(message))
-        case .critical:
-            stopDiskSpaceMonitor()
-            recordFailure(
-                .insufficientDiskSpace(availableBytes: availableBytes)
-            )
-        }
+    private func stopDurationLimit() {
+        durationLimitTimer?.cancel()
+        durationLimitTimer = nil
     }
 
     /// 仅在 `sampleQueue` 上调用；保留首个故障并通知等待方。

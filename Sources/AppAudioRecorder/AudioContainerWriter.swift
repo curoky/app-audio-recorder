@@ -41,28 +41,12 @@ nonisolated final class AudioContainerWriter {
     private var nextExpectedPTS: [Track: CMTime] = [:]
     private var trackFormats: [Track: TrackFormat] = [:]
     private var writtenFrames: [Track: AVAudioFramePosition] = [:]
-    private var droppedBuffers: [Track: Int] = [:]
-    /// 真实捕获（非合成静音）追加成功的帧数，用于区分「录到了」与「只补了静音」。
-    private var capturedFrames: [Track: Int64] = [:]
-    private var peakAmplitude: [Track: Float] = [:]
-    private var didMeasurePeak: [Track: Bool] = [:]
 
     /// 已写入 app 轨的帧数，供结束时估算时长。
     private(set) var appFrames: AVAudioFramePosition = 0
 
     var recordedFrames: AVAudioFramePosition {
         writtenFrames.values.max() ?? 0
-    }
-
-    /// 指定轨的健康度量，仅统计真实捕获样本；`.mic` 未启用时返回 `.empty`。
-    func health(for track: Track) -> TrackAudioHealth {
-        guard expectedTracks.contains(track) else { return .empty }
-        return TrackAudioHealth(
-            capturedFrames: capturedFrames[track, default: 0],
-            peakAmplitude: peakAmplitude[track, default: 0],
-            didMeasurePeak: didMeasurePeak[track, default: false],
-            droppedBuffers: droppedBuffers[track, default: 0]
-        )
     }
 
     /// - Parameters:
@@ -254,7 +238,6 @@ nonisolated final class AudioContainerWriter {
         }
 
         if try appendToInput(sampleBuffer, to: track, input: input) {
-            measureCapturedAudio(sampleBuffer, format: format.audioFormat, track: track)
             nextExpectedPTS[track] = bufferEndTime(sampleBuffer, format: format.audioFormat)
         }
     }
@@ -327,46 +310,6 @@ nonisolated final class AudioContainerWriter {
             let audioFormat = AVAudioFormat(streamDescription: &streamDescription)
         else { return nil }
         return TrackFormat(description: description, audioFormat: audioFormat)
-    }
-
-    /// 统计真实捕获帧数并扫描 float32 样本峰值，用于停止时的轨道健康判定。
-    ///
-    /// 仅在成功追加真实样本后调用；补的静音不计入。非 float32 或读取失败时只累加帧数、
-    /// 不标记已测峰值，避免把「无法测量」误判成「静音」。峰值扫描按裸 buffer 遍历，
-    /// 交错与非交错布局都适用。
-    private func measureCapturedAudio(
-        _ sampleBuffer: CMSampleBuffer,
-        format: AVAudioFormat,
-        track: Track
-    ) {
-        let frameCount = AVAudioFrameCount(CMSampleBufferGetNumSamples(sampleBuffer))
-        capturedFrames[track, default: 0] += Int64(frameCount)
-        guard frameCount > 0,
-            format.commonFormat == .pcmFormatFloat32,
-            let pcmBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
-        else { return }
-        pcmBuffer.frameLength = frameCount
-        guard
-            CMSampleBufferCopyPCMDataIntoAudioBufferList(
-                sampleBuffer,
-                at: 0,
-                frameCount: Int32(frameCount),
-                into: pcmBuffer.mutableAudioBufferList
-            ) == noErr
-        else { return }
-
-        var peak = peakAmplitude[track, default: 0]
-        for buffer in UnsafeMutableAudioBufferListPointer(pcmBuffer.mutableAudioBufferList) {
-            guard let data = buffer.mData else { continue }
-            let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-            let samples = data.assumingMemoryBound(to: Float.self)
-            for index in 0..<count {
-                let magnitude = abs(samples[index])
-                if magnitude > peak { peak = magnitude }
-            }
-        }
-        peakAmplitude[track] = peak
-        didMeasurePeak[track] = true
     }
 
     private func bufferEndTime(
@@ -446,8 +389,8 @@ nonisolated final class AudioContainerWriter {
         to track: Track,
         input: AVAssetWriterInput
     ) throws -> Bool {
+        // 实时写盘背压时丢弃当前 buffer，后续通过 PTS 缺口补静音保持时间线，不中断整段录制。
         guard input.isReadyForMoreMediaData else {
-            droppedBuffers[track, default: 0] += 1
             return false
         }
         guard input.append(sampleBuffer) else {

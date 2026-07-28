@@ -314,9 +314,7 @@ final class RecorderModel {
                 for await event in events {
                     guard !Task.isCancelled else { return }
                     switch event {
-                    case .warning(let message):
-                        self?.errorMessage = message
-                    case .failure:
+                    case .stopRequested, .failure:
                         await self?.finishRecording()
                         return
                     }

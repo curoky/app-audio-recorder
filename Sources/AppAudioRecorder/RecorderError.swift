@@ -8,7 +8,6 @@ enum RecorderError: LocalizedError, Sendable {
     case applicationNotRunning(bundleIdentifier: String)
     case noAppsAvailable
     case audioCaptureFailed
-    case insufficientDiskSpace(availableBytes: Int64)
     case outputNotWritable(path: String)
 
     var errorDescription: String? {
@@ -29,9 +28,6 @@ enum RecorderError: LocalizedError, Sendable {
             return "当前没有可捕获音频的运行中 app。"
         case .audioCaptureFailed:
             return "音频捕获意外停止。"
-        case .insufficientDiskSpace(let availableBytes):
-            let megabytes = max(0, availableBytes) / 1_000_000
-            return "磁盘可用空间不足（剩余 \(megabytes) MB），无法继续录制。"
         case .outputNotWritable(let path):
             return "输出路径不可写：\(path)"
         }
